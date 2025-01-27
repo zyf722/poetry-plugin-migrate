@@ -17,10 +17,12 @@ EXPECTED_TEMPLATE_SUFFIX = ".expected.tpl.toml"
 # We need this because we want to test a local absolute path
 # but there's no way to hardcode since it depends on the environment
 # here we dynamically replace the placeholder with the actual path
+ABSOLUTE_PACKAGE_PATH = (FIXTURES_DIR / "local_absolute_package").absolute()
 TEMPLATE_ARGS = {
-    "LOCAL_ABSOLUTE_PACKAGE": (FIXTURES_DIR / "local_absolute_package")
-    .absolute()
-    .as_posix()
+    "LOCAL_ABSOLUTE_PACKAGE": ABSOLUTE_PACKAGE_PATH.as_posix(),
+    "LOCAL_ABSOLUTE_PACKAGE_FILE": f"/{ABSOLUTE_PACKAGE_PATH.as_posix()}"
+    if ABSOLUTE_PACKAGE_PATH.drive
+    else ABSOLUTE_PACKAGE_PATH.as_posix(),
 }
 
 

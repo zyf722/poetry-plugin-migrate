@@ -66,7 +66,7 @@ git-rev = { git = "https://github.com/example/rev.git", rev = "deadbeef" }
 git-tag = { git = "https://github.com/example/tag.git", tag = "1.2.3" }
 git-subdir = { git = "https://github.com/example/subdir.git", subdirectory = "subdir" }
 local-package = { path = "../local_package/", develop = true }
-local-package-absolute = { path = "<% LOCAL_ABSOLUTE_PACKAGE %>", develop = true }
+local-absolute-package = { path = "<% LOCAL_ABSOLUTE_PACKAGE %>", develop = true }
 url = { url = "https://example.com/url-package-0.1.0.tar.gz" }
 baby = { version = "^0.12.0", extras = ["toy-1", "toy-2"] }
 spy = { version = "*", source = "private" }

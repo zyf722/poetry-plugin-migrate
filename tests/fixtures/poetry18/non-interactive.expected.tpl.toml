@@ -29,7 +29,7 @@ priority = "supplemental"
 [tool.poetry.dependencies]
 python = "^3.9"
 local-package = { path = "../local_package/", develop = true }
-local-package-absolute = {  develop = true }
+local-absolute-package = {  develop = true }
 spy = {  source = "private" }
 foo = [{ platform = "win32",  python = ">=3.8", source = "private" }, { platform = "darwin"  }, { platform = "linux",  python = ">=3.6,<3.8" }]
 chocolate = [{ platform = "win32",   source = "private" }, { platform = "darwin"   }, { platform = "linux"   }]
@@ -50,7 +50,7 @@ dynamic = ["version", "classifiers", "readme"]
 authors = [{name = "Test Guy", email = "test.guy@example.com"}, {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"}]
 maintainers = [{name = "Maintainer Two", email = "maintainer.two@other.example.com"}, {name = "Maintainer One", email = "maintainer.one@example.com"}]
 requires-python = '>=3.9,<4.0'
-dependencies = ['careter (>=1.2.3,<2.0.0)', 'tilder (>=1.2.3,<1.3.0)', 'wildcarder (==1.*)', 'inequalitier (>=1.2.3,<2.0.0)', 'exacter (==1.2.3)', 'equal-exacter (==1.2.3)', 'git-branch @ git+https://github.com/example/branch.git@next', 'git-rev @ git+https://github.com/example/rev.git@deadbeef', 'git-tag @ git+https://github.com/example/tag.git@1.2.3', 'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir', 'local-package-absolute @ file:///<% LOCAL_ABSOLUTE_PACKAGE %>', 'url @ https://example.com/url-package-0.1.0.tar.gz', 'baby[toy-1,toy-2] (>=0.12.0,<0.13.0)', 'spy', 'tomli (>=2.0.1,<3.0.0) ; python_version < "3.11"', 'pathlib2 (>=2.2,<3.0) ; python_version <= "3.4" or sys_platform == "win32"', 'big-guy (>=18.0.0) ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"', 'foo (>=2.0,<3.0) ; python_version >= "3.8" and sys_platform == "win32"', 'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"', 'foo (>=1.0,<2.0) ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"']
+dependencies = ['careter (>=1.2.3,<2.0.0)', 'tilder (>=1.2.3,<1.3.0)', 'wildcarder (==1.*)', 'inequalitier (>=1.2.3,<2.0.0)', 'exacter (==1.2.3)', 'equal-exacter (==1.2.3)', 'git-branch @ git+https://github.com/example/branch.git@next', 'git-rev @ git+https://github.com/example/rev.git@deadbeef', 'git-tag @ git+https://github.com/example/tag.git@1.2.3', 'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir', 'local-absolute-package @ file://<% LOCAL_ABSOLUTE_PACKAGE_FILE %>', 'url @ https://example.com/url-package-0.1.0.tar.gz', 'baby[toy-1,toy-2] (>=0.12.0,<0.13.0)', 'spy', 'tomli (>=2.0.1,<3.0.0) ; python_version < "3.11"', 'pathlib2 (>=2.2,<3.0) ; python_version <= "3.4" or sys_platform == "win32"', 'big-guy (>=18.0.0) ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"', 'foo (>=2.0,<3.0) ; python_version >= "3.8" and sys_platform == "win32"', 'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"', 'foo (>=1.0,<2.0) ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"']
 
 [project.urls]
 homepage = "https://example.com/"
