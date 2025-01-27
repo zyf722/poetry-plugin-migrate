@@ -333,59 +333,63 @@ class Migrator:
                 )
 
             ## URLs
-            if "urls" not in project:
-                project["urls"] = table()
-            urls = project["urls"]
-            for field in ("homepage", "repository", "documentation"):
-                self._move(
-                    field,
+            url_fields = ("homepage", "repository", "documentation")
+            if any(field in tool_poetry for field in url_fields):
+                if "urls" not in project:
+                    project["urls"] = table()
+                urls = project["urls"]
+                for field in url_fields:
+                    self._move(
+                        field,
+                        tool_poetry,
+                        urls,
+                        from_container_key="tool.poetry",
+                        to_container_key="project.urls",
+                    )
+                self._move_sub_container(
+                    "urls",
                     tool_poetry,
                     urls,
                     from_container_key="tool.poetry",
                     to_container_key="project.urls",
                 )
-            self._move_sub_container(
-                "urls",
-                tool_poetry,
-                urls,
-                from_container_key="tool.poetry",
-                to_container_key="project.urls",
-            )
 
             ## Plugins
-            if "entry-points" not in project:
-                project["entry-points"] = table()
-            entry_points = project["entry-points"]
-            self._move_sub_container(
-                "plugins",
-                tool_poetry,
-                entry_points,
-                from_container_key="tool.poetry",
-                to_container_key="project.entry-points",
-            )
+            if "plugins" in tool_poetry:
+                if "entry-points" not in project:
+                    project["entry-points"] = table()
+                entry_points = project["entry-points"]
+                self._move_sub_container(
+                    "plugins",
+                    tool_poetry,
+                    entry_points,
+                    from_container_key="tool.poetry",
+                    to_container_key="project.entry-points",
+                )
 
             ## Scripts
-            if "scripts" not in project:
-                project["scripts"] = table()
-            scripts = project["scripts"]
+            if "scripts" in tool_poetry:
+                if "scripts" not in project:
+                    project["scripts"] = table()
+                scripts = project["scripts"]
 
-            def transform_script_item(
-                script_name: str, tool_poetry_scripts: dict[str, Any]
-            ):
-                script = tool_poetry_scripts[script_name]
-                if not isinstance(script, str):
-                    # Keep scripts of type file in tool.poetry
-                    raise SkipField()
-                return script
+                def transform_script_item(
+                    script_name: str, tool_poetry_scripts: dict[str, Any]
+                ):
+                    script = tool_poetry_scripts[script_name]
+                    if not isinstance(script, str):
+                        # Keep scripts of type file in tool.poetry
+                        raise SkipField()
+                    return script
 
-            self._move_sub_container(
-                "scripts",
-                tool_poetry,
-                scripts,
-                from_container_key="tool.poetry",
-                to_container_key="project.scripts",
-                from_item_transformer=transform_script_item,
-            )
+                self._move_sub_container(
+                    "scripts",
+                    tool_poetry,
+                    scripts,
+                    from_container_key="tool.poetry",
+                    to_container_key="project.scripts",
+                    from_item_transformer=transform_script_item,
+                )
 
             # Fields needing prompt
             ## version
@@ -476,16 +480,17 @@ class Migrator:
                 return result
 
             for arr_name in ("authors", "maintainers"):
-                if arr_name not in project:
-                    project[arr_name] = array()
-                self._move_sub_container(
-                    arr_name,
-                    tool_poetry,
-                    project[arr_name],
-                    from_container_key="tool.poetry",
-                    to_container_key=f"project.{arr_name}",
-                    from_item_transformer=transform_person_item,
-                )
+                if arr_name in tool_poetry:
+                    if arr_name not in project:
+                        project[arr_name] = array()
+                    self._move_sub_container(
+                        arr_name,
+                        tool_poetry,
+                        project[arr_name],
+                        from_container_key="tool.poetry",
+                        to_container_key=f"project.{arr_name}",
+                        from_item_transformer=transform_person_item,
+                    )
 
             ## Dependencies
             if "dependencies" in tool_poetry:
