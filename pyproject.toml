@@ -1,0 +1,53 @@
+[project]
+name = "poetry-plugin-migrate"
+version = "0.1.0"
+description = "Poetry plugin to migrate pyproject.toml from Poetry v1 to v2 (PEP-621 compliant)"
+license = "MIT"
+authors = [{ name = "zyf722", email = "MaxMixAlex@protonmail.com" }]
+keywords = ["poetry", "migrate", "PEP-621", "pyproject.toml"]
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+dependencies = ["poetry (>=2.0.0,<3.0.0)"]
+dynamic = ["classifiers"]
+
+[project.urls]
+homepage = "https://github.com/zyf722/poetry-plugin-migrate"
+repository = "https://github.com/zyf722/poetry-plugin-migrate"
+
+[project.entry-points."poetry.application.plugin"]
+poetry-plugin-migrate = "poetry_plugin_migrate.plugin:MigrateApplicationPlugin"
+
+[tool.poetry]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-poetry = ">=2.0"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8.3.4"
+pytest-mock = "^3.14.0"
+pytest-cov = "^6.0.0"
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.14.1"
+ruff = "^0.9.3"
+
+[tool.mypy]
+check_untyped_defs = true
+
+[tool.ruff]
+output-format = "github"
+
+[tool.ruff.lint]
+select = ["I"]
+ignore = ["E501"]
+
+[tool.coverage.run]
+branch = true
+
+[build-system]
+requires = ["poetry-core (>=2.0.0,<3.0.0)"]
+build-backend = "poetry.core.masonry.api"
