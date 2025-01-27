@@ -1,0 +1,96 @@
+# This file is part of the poetry-plugin-migrate project.
+
+# Some comments on this line
+[tool.poetry]
+package-mode = false # Hey this should not be touched
+name = "poetry-18"
+version = "1.2.3"
+description = "Test project that contains a pyproject.toml with Poetry v1.8 metadata."
+license = "MIT"
+authors = [
+    "MaxMixAlex <MaxMixAlex@protonmail.com>",
+    "Test Guy <test.guy@example.com>",
+]
+maintainers = [
+    "Maintainer One <maintainer.one@example.com>",
+    "Maintainer Two <maintainer.two@other.example.com>",
+]
+readme = ["README1.md", "README2.md"]
+homepage = "https://example.com/"
+repository = "https://github.com/zyf722/poetry-plugin-migrate"
+documentation = "https://anyway.we.need.a.documentation.website/"
+keywords = ["we", "just", "need", "some", "keywords", "for", "this", "project"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development",
+    "Topic :: System",
+    "Topic :: Terminals",
+    "Typing :: Typed",
+    "Operating System :: OS Independent",
+]
+packages = [{ include = "poetry18" }] # This should not be touched too
+
+[tool.poetry.urls]
+"Test custom URL" = "https://how.are.you/doing/"
+"Just another one" = "https://another.one/"
+
+[tool.poetry.scripts]
+run_as_fast_as_possible = "poetry18.__main__:main"
+poet = { reference = "write_some_poem.exe", type = "file" } # File-based scripts!
+
+[tool.poetry.extras]
+birthday-present = ["chocolate"]
+networking = ["requests", "httpx"]
+
+[tool.poetry.plugins."poetry.application.plugin"]
+hi = "poetry18.plugins:ActuallyThereIsNoSuchPlugin"
+
+[[tool.poetry.source]]
+name = "private"
+url = "http://a.source.too.secret/simple"
+priority = "supplemental"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+careter = "^1.2.3"
+tilder = "~1.2.3"
+wildcarder = "1.*"
+inequalitier = ">=1.2.3,<2.0.0"
+exacter = "1.2.3"
+equal-exacter = "==1.2.3"
+git-branch = { git = "https://github.com/example/branch.git", branch = "next" }
+git-rev = { git = "https://github.com/example/rev.git", rev = "deadbeef" }
+git-tag = { git = "https://github.com/example/tag.git", tag = "1.2.3" }
+git-subdir = { git = "https://github.com/example/subdir.git", subdirectory = "subdir" }
+local-package = { path = "../local_package/", develop = true }
+local-package-absolute = { path = "<% LOCAL_ABSOLUTE_PACKAGE %>", develop = true }
+url = { url = "https://example.com/url-package-0.1.0.tar.gz" }
+baby = { version = "^0.12.0", extras = ["toy-1", "toy-2"] }
+spy = { version = "*", source = "private" }
+tomli = { version = "^2.0.1", python = "<3.11" }
+pathlib2 = { version = "^2.2", markers = "python_version <= '3.4' or sys_platform == 'win32'" }
+foo = [
+    { platform = "win32", version = "^2.0", python = ">=3.8", source = "private" },
+    { platform = "darwin", url = "https://example.com/example-1.0-py3-none-any.whl" },
+    { platform = "linux", version = "^1.0", python = ">=3.6,<3.8" },
+]
+chocolate = [
+    { platform = "win32", version = "^1.0", optional = true, source = "private" },
+    { platform = "darwin", version = "~2.0", optional = true },
+    { platform = "linux", version = "==3.0", optional = true },
+]
+requests = { version = "^2.0", optional = true, python = "^3.6" }
+httpx = { version = "^0.23", optional = true, python = "^3.6" }
+
+[tool.poetry.dependencies.big-guy]
+version = ">=18.0.0"
+allow-prereleases = true
+python = "^3.9"
+markers = "platform_python_implementation == 'CPython'"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
