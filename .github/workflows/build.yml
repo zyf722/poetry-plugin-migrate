@@ -49,9 +49,6 @@ jobs:
       - name: Type-check code using mypy
         run: poetry run mypy .
 
-      - name: Check import order using isort
-        run: poetry run isort -c
-
   build:
     name: Test and Build
 
