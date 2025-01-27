@@ -29,20 +29,6 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-    steps:
-      - name: Release
-        id: release
-        uses: googleapis/release-please-action@v4
-        with:
-          release-type: python
-
   publish:
     name: Publish and Release (${{ github.event.inputs.dry-run == 'true' && 'Dry Run' || 'Prod' }})
     runs-on: ubuntu-latest
