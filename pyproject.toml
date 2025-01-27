@@ -1,6 +1,6 @@
 [project]
 name = "poetry-plugin-migrate"
-version = "0.0.0"
+version = "0.1.0"
 description = "Poetry plugin to migrate pyproject.toml from Poetry v1 to v2 (PEP-621 compliant)"
 license = "MIT"
 authors = [{ name = "zyf722", email = "MaxMixAlex@protonmail.com" }]
