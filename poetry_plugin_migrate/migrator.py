@@ -650,7 +650,7 @@ class Migrator:
                     "Keeps dependencies in <b>[tool.poetry]</b>?",
                     additional_info=(
                         "<b>[tool.poetry.dependencies]</b> found. "
-                        "`dependencies` will be added to <b>[project.dynamic]</b>"
+                        "`dependencies` will be added to <b>[project.dynamic]</b> "
                         "if you want to keep it in <b>[tool.poetry]</b>. "
                     ),
                 ):
