@@ -1,6 +1,6 @@
 [project]
 name = "poetry-plugin-migrate"
-version = "0.1.0"
+version = "0.0.0"
 description = "Poetry plugin to migrate pyproject.toml from Poetry v1 to v2 (PEP-621 compliant)"
 license = "MIT"
 authors = [{ name = "zyf722", email = "MaxMixAlex@protonmail.com" }]
@@ -34,6 +34,7 @@ pytest-cov = "^6.0.0"
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.14.1"
 ruff = "^0.9.3"
+python-semantic-release = "^9.17.0"
 
 [tool.mypy]
 check_untyped_defs = true
@@ -47,6 +48,25 @@ ignore = ["E501"]
 
 [tool.coverage.run]
 branch = true
+
+[tool.semantic_release]
+version_toml = [
+    "pyproject.toml:project.version"
+]
+branch = "main"
+tag_format = "{version}"
+commit_author = "github-actions[bot] <actions@github.com>"
+commit_message = "chore(release): v{version}"
+
+[tool.semantic_release.changelog]
+keep_trailing_newline = true
+
+[tool.semantic_release.remote]
+type = "github"
+token = { env = "GH_TOKEN" }
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = true
 
 [build-system]
 requires = ["poetry-core (>=2.0.0,<3.0.0)"]
