@@ -1,9 +1,25 @@
 # CHANGELOG
 
 
+## v0.1.1 (2025-01-27)
+
+### Bug Fixes
+
+- Fix missing space
+  ([`2399e5b`](https://github.com/zyf722/poetry-plugin-migrate/commit/2399e5b8a1f09b910ac9f9c55ea9bc58853fc532))
+
+### Testing
+
+- Fix test case for simple project
+  ([`f0ea4c7`](https://github.com/zyf722/poetry-plugin-migrate/commit/f0ea4c78c4061cb48571eb354a1269745bd6021f))
+
+
 ## v0.1.0 (2025-01-27)
 
 ### Bug Fixes
+
+- Do not create corresponding target field if source field does not exist in `tool.poetry`
+  ([`1841ed6`](https://github.com/zyf722/poetry-plugin-migrate/commit/1841ed6c677ff268d3883379fc82861cde90f972))
 
 - **ci**: Fix mypy argument
   ([`f8cbcba`](https://github.com/zyf722/poetry-plugin-migrate/commit/f8cbcbaa2480a7f779cc6c529383c985e0c5cd62))
@@ -48,6 +64,9 @@
   ([`babdbb9`](https://github.com/zyf722/poetry-plugin-migrate/commit/babdbb9b968cab1a006ef6c5b233917c6b0e277b))
 
 ### Testing
+
+- Add simple project for testing
+  ([`708b183`](https://github.com/zyf722/poetry-plugin-migrate/commit/708b183ec5b387adf6c019a0e2a08e8587a4ea4f))
 
 - Add test
   ([`d693b2b`](https://github.com/zyf722/poetry-plugin-migrate/commit/d693b2b82576705bdeefdf95e3fb400c563e22ba))
