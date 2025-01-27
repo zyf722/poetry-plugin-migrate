@@ -1,0 +1,99 @@
+name: CI Build
+
+on:
+  push:
+    paths:
+      - "poetry_plugin_migrate/**"
+      - "tests/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "poetry_plugin_migrate/**"
+      - "tests/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+jobs:
+  common-checks:
+    name: Pre-checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Check for typos
+        uses: crate-ci/typos@master
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+          cache: poetry
+
+      - name: Set Poetry environment
+        run: poetry env use '${{ steps.python.outputs.python-path }}'
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Lint code and check code formatting using ruff
+        run: |
+          poetry run ruff check
+          poetry run ruff format --check
+
+      - name: Type-check code using mypy
+        run: poetry run mypy
+
+      - name: Check import order using isort
+        run: poetry run isort -c
+
+  build:
+    name: Test and Build
+
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    needs: common-checks
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: poetry
+
+      - name: Set Poetry environment
+        run: poetry env use '${{ steps.python.outputs.python-path }}'
+        
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run tests
+        run: poetry run pytest -v --cov=poetry_plugin_migrate --cov-report=xml:coverage.xml
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          name: poetry_plugin_migrate-${{ matrix.os }}-${{ matrix.python-version }}
+          verbose: true
+          files: ./coverage.xml
+          flags: ${{ matrix.os }},${{ matrix.python-version }}
+
+      - name: Build package
+        run: poetry build
