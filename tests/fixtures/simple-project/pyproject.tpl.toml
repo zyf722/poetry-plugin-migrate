@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "simple-project"
+version = "1.2.3"
+description = "Test project for poetry-plugin-migrate"
+license = "MIT"
+authors = [
+    "Dev Guy <dev.guy@example.com>",
+    "Test Guy <test.guy@example.com>",
+]
+maintainers = [
+    "Maintainer One <maintainer.one@example.com>",
+]
+readme = "README.md"
+homepage = "https://example.com/"
+repository = "https://github.com/zyf722/poetry-plugin-migrate"
+keywords = ["we", "just", "need", "some", "keywords"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+]
+
+[tool.poetry.scripts]
+main = "simple_project.__main__:main"
+
+[[tool.poetry.source]]
+name = "private"
+url = "http://a.source.too.secret/simple"
+priority = "supplemental"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+private-package = { version = "^1.0", source = "private" }
+requests = "^2.0"
+httpx = { version = "^0.23", python = "^3.9" }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

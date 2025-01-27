@@ -27,7 +27,7 @@ readme = "README.md"
 authors = [{name = "Test Guy", email = "test.guy@example.com"}, {name = "Dev Guy", email = "dev.guy@example.com"}]
 maintainers = [{name = "Maintainer One", email = "maintainer.one@example.com"}]
 requires-python = '>=3.9,<4.0'
-dependencies = ['private-package (>=1.0,<2.0)']
+dependencies = ['private-package (>=1.0,<2.0)', 'requests (>=2.0,<3.0)', 'httpx (>=0.23,<0.24) ; python_version >= "3.9" and python_version < "4.0"']
 
 [project.urls]
 homepage = "https://example.com/"
