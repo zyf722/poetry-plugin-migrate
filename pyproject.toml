@@ -6,7 +6,7 @@ license = "MIT"
 authors = [{ name = "zyf722", email = "MaxMixAlex@protonmail.com" }]
 keywords = ["poetry", "migrate", "PEP-621", "pyproject.toml"]
 readme = "README.md"
-requires-python = ">=3.9,<4.0"
+requires-python = ">=3.10,<4.0"
 dependencies = ["poetry (>=2.0.0,<3.0.0)"]
 dynamic = ["classifiers"]
 
@@ -27,14 +27,13 @@ classifiers = [
 requires-poetry = ">=2.0"
 
 [tool.poetry.group.test.dependencies]
-pytest = "^8.3.4"
-pytest-mock = "^3.14.0"
+pytest = "^9.0.0"
 pytest-cov = "^6.0.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.14.1"
-ruff = "^0.9.3"
-python-semantic-release = "^9.17.0"
+ruff = "^0.16.0"
+python-semantic-release = "^10.0.0"
 
 [tool.mypy]
 check_untyped_defs = true
@@ -50,9 +49,7 @@ ignore = ["E501"]
 branch = true
 
 [tool.semantic_release]
-version_toml = [
-    "pyproject.toml:project.version"
-]
+version_toml = ["pyproject.toml:project.version"]
 branch = "main"
 tag_format = "{version}"
 commit_author = "github-actions[bot] <actions@github.com>"
