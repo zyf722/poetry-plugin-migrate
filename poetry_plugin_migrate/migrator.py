@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 from poetry.core.constraints.version import parse_constraint
 
 if TYPE_CHECKING:
-    from typing import Any, Callable, ClassVar
+    from collections.abc import Callable
+    from typing import Any, ClassVar
 
     from poetry.console.commands.command import Command
     from tomlkit import TOMLDocument
@@ -15,13 +16,16 @@ if TYPE_CHECKING:
     )
 
 
-class SkipField(Exception):
+_UNSET = object()
+
+
+class SkipField(Exception):  # noqa: N818
     """Marker used in migration to skip field."""
 
     pass
 
 
-class CopyModifiedField(Exception):
+class CopyModifiedField(Exception):  # noqa: N818
     """
     Marker used in migration to copy field to another container instead of moving it.
 
@@ -29,6 +33,14 @@ class CopyModifiedField(Exception):
     """
 
     pass
+
+
+class RemoveField(Exception):  # noqa: N818
+    """Marker used when a transformer consumed a source field without a target move."""
+
+
+class UpdateField(Exception):  # noqa: N818
+    """Marker used when a transformer only needs to update the source field."""
 
 
 class Migrator:
@@ -68,7 +80,7 @@ class Migrator:
     - `dependencies.python`, with `requires-python` added as `dynamic` (*prompt*, if user tends to keep it)
 
     Other changes:
-    - Add `[tool.poetry.requires-poetry]` with value `>=2.0`
+    - Add or update `[tool.poetry.requires-poetry]` with a Poetry 2.2.1 constraint (*prompt*)
     - Update `[build-system.requires]` to `poetry-core>=2.0.0,<3.0.0` if `poetry-core` is set (*prompt*)
     """
 
@@ -92,6 +104,12 @@ class Migrator:
     ]
     """List of constraints of Poetry v2 to be used in migration."""
 
+    POETRY_CONSTRAINT_PRESETS: ClassVar[list[str]] = [
+        ">=2.2.1",
+        ">=2.2.1,<3.0.0",
+    ]
+    """Poetry constraints compatible with dependency-group migration."""
+
     def __init__(self, command: Command, skip: bool, literal: bool):
         self.warnings = []
         self.skip = skip
@@ -106,8 +124,10 @@ class Migrator:
         *,
         from_container_key: str,
         to_container_key: str,
-        update_value: Any | None = None,
-    ):
+        update_value: Any = _UNSET,
+        target_value: Any = _UNSET,
+        remove_source: bool = True,
+    ) -> bool:
         """
         Move field from one container to another container.
 
@@ -121,45 +141,62 @@ class Migrator:
             try:
                 field_value = from_container[field_or_index]
             except KeyError:
-                return
+                return False
 
         elif isinstance(from_container, list) and isinstance(field_or_index, int):
             try:
                 field_value = from_container[field_or_index]
             except IndexError:
-                return
+                return False
         else:
             raise ValueError("Invalid combination of field_or_index and from_container")
 
-        # Move the field value to the to_container
+        value_to_move = field_value if target_value is _UNSET else target_value
+
+        # Move the field value to the to_container.  A different existing target
+        # is a real conflict: preserve the legacy source instead of silently
+        # deleting information the user has not accepted losing.
         if isinstance(to_container, dict):
             assert isinstance(field_or_index, str), (
                 "Expected field_or_index to be a string"
             )
             if field_or_index in to_container:
-                pretty_field = str(
-                    field_or_index
-                )  # Assuming `key(field_or_index).as_string()` is to format the key
+                pretty_field = str(field_or_index)
+                if to_container[field_or_index] != value_to_move:
+                    self.warnings.append(
+                        f"[{to_container_key}.{pretty_field}] and "
+                        f"[{from_container_key}.{pretty_field}] are both set to "
+                        "different values. Both values were kept."
+                    )
+                    return False
                 self.warnings.append(
                     f"[{to_container_key}.{pretty_field}] and [{from_container_key}.{pretty_field}] are both set. "
-                    "The former will be kept and the latter will be removed."
+                    "The duplicate legacy value will be removed."
                 )
             else:
-                to_container[field_or_index] = field_value
+                to_container[field_or_index] = value_to_move
 
         elif isinstance(to_container, list):
-            if field_value in to_container:
+            if value_to_move in to_container:
                 self.warnings.append(
-                    f"Value {field_value} is already in [{to_container_key}] and will be remove from [{from_container_key}]."
+                    f"Value {value_to_move} is already in [{to_container_key}] "
+                    f"and will be removed from [{from_container_key}]."
                 )
             else:
-                to_container.append(field_value)
+                to_container.append(value_to_move)
 
         # Remove / update field in from_container
-        if update_value is not None:
-            from_container[field_or_index] = update_value  # type: ignore[index]
-        else:
-            del from_container[field_or_index]  # type: ignore[arg-type]
+        if remove_source:
+            if update_value is not _UNSET:
+                # Dependency transformers normally mutate a copied value and
+                # return it here. Avoid assigning the exact same object because
+                # tomlkit containers maintain additional internal indexes.
+                if from_container[field_or_index] is not update_value:  # type: ignore[index]
+                    from_container[field_or_index] = update_value  # type: ignore[index]
+            else:
+                del from_container[field_or_index]  # type: ignore[arg-type]
+
+        return True
 
     def _move_sub_container(
         self,
@@ -176,58 +213,125 @@ class Migrator:
 
         If field is already in `to_container`, add a warning and not overwrite it.
         """
-        if sub_container_name in from_container:
-            from_sub_container = from_container[sub_container_name]
+        if sub_container_name not in from_container:
+            return
 
-            if isinstance(from_sub_container, dict):
-                for from_key in tuple(from_sub_container.keys()):
-                    update_value = None
+        from_sub_container = from_container[sub_container_name]
 
-                    if from_item_transformer:
-                        try:
-                            from_sub_container[from_key] = from_item_transformer(
-                                from_key,  # type: ignore[arg-type]
-                                from_sub_container,  # type: ignore[arg-type]
-                            )
-                        except SkipField:
-                            continue
-                        except CopyModifiedField as e:
-                            from_sub_container[from_key] = e.args[0]
-                            update_value = e.args[1]
-
-                    self._move(
-                        from_key,
-                        from_sub_container,
-                        to_container,
-                        from_container_key=f"{from_container_key}.{sub_container_name}",
-                        to_container_key=to_container_key,
-                        update_value=update_value,
+        if isinstance(from_sub_container, dict):
+            original_keys = tuple(from_sub_container.keys())
+            moved_keys: list[str] = []
+            updates: dict[str, Any] = {}
+            for from_key in original_keys:
+                # Do not run a potentially mutating transformer when the target
+                # already contains a different value for the same key.
+                if isinstance(to_container, dict) and from_key in to_container:
+                    self.warnings.append(
+                        f"[{to_container_key}.{from_key}] and "
+                        f"[{from_container_key}.{sub_container_name}.{from_key}] "
+                        "are both set. The legacy value was kept for review."
                     )
+                    continue
 
-            elif isinstance(from_sub_container, list):
-                for i in range(len(from_sub_container) - 1, -1, -1):
-                    if from_item_transformer:
-                        try:
-                            from_sub_container[i] = from_item_transformer(
-                                i,  # type: ignore[arg-type]
-                                from_sub_container,  # type: ignore[arg-type]
-                            )
-                        except SkipField:
-                            continue
+                update_value = _UNSET
+                target_value = _UNSET
 
-                    self._move(
-                        i,
-                        from_sub_container,
-                        to_container,
-                        from_container_key=f"{from_container_key}.{sub_container_name}",
-                        to_container_key=to_container_key,
-                    )
+                if from_item_transformer:
+                    try:
+                        target_value = from_item_transformer(
+                            from_key,
+                            from_sub_container,  # type: ignore[arg-type]
+                        )
+                    except SkipField:
+                        continue
+                    except RemoveField:
+                        moved_keys.append(from_key)
+                        continue
+                    except UpdateField as e:
+                        updates[from_key] = e.args[0]
+                        continue
+                    except CopyModifiedField as e:
+                        target_value = e.args[0]
+                        update_value = e.args[1]
 
-            else:
-                raise TypeError(f"Unexpected type {type(from_sub_container)}")
+                moved = self._move(
+                    from_key,
+                    from_sub_container,
+                    to_container,
+                    from_container_key=f"{from_container_key}.{sub_container_name}",
+                    to_container_key=to_container_key,
+                    update_value=update_value,
+                    target_value=target_value,
+                    remove_source=False,
+                )
 
-            if len(from_sub_container) == 0:
+                if not moved:
+                    continue
+                if update_value is _UNSET:
+                    moved_keys.append(from_key)
+                else:
+                    updates[from_key] = update_value
+
+            # Deleting an emptied nested tomlkit table item-by-item and then
+            # deleting its parent can corrupt tomlkit's internal table map (the
+            # root cause reported in Issue #1). Delete the parent directly when
+            # every item moved; otherwise only remove the successfully moved
+            # keys and retain skipped/conflicting values.
+            remaining_keys = set(original_keys) - set(moved_keys)
+            if not remaining_keys:
                 del from_container[sub_container_name]
+                return
+
+            for from_key in moved_keys:
+                del from_sub_container[from_key]
+            for from_key, update_value in updates.items():
+                if from_sub_container[from_key] is not update_value:
+                    from_sub_container[from_key] = update_value
+
+        elif isinstance(from_sub_container, list):
+            if not isinstance(to_container, list):
+                raise TypeError(
+                    f"Cannot move list [{from_container_key}.{sub_container_name}] "
+                    f"to non-list [{to_container_key}]"
+                )
+
+            # Collect items in forward order to preserve original ordering.
+            # items_to_move and items_to_keep hold the (possibly transformed) values.
+            items_to_move: list[Any] = []
+            items_to_keep: list[Any] = []
+            source_values = list(from_sub_container)
+            for i, source_value in enumerate(source_values):
+                transformed_value = source_value
+                if from_item_transformer:
+                    try:
+                        transformed_value = from_item_transformer(
+                            i,  # type: ignore[arg-type]
+                            source_values,  # type: ignore[arg-type]
+                        )
+                    except SkipField:
+                        items_to_keep.append(source_value)
+                        continue
+                items_to_move.append(transformed_value)
+
+            for item in items_to_move:
+                if item not in to_container:
+                    to_container.append(item)
+
+            if len(items_to_keep) == 0:
+                del from_container[sub_container_name]
+                return
+
+            # Clear source and re-add only kept items
+            while len(from_sub_container) > 0:
+                del from_sub_container[-1]
+            for item in items_to_keep:
+                from_sub_container.append(item)
+
+        else:
+            raise TypeError(f"Unexpected type {type(from_sub_container)}")
+
+        if sub_container_name in from_container and len(from_sub_container) == 0:
+            del from_container[sub_container_name]
 
     def _prompt(
         self, question: str, default: bool = False, additional_info: str | None = None
@@ -261,15 +365,19 @@ class Migrator:
         self.command.line("")
 
         if isinstance(result, int):
-            # If result is an index, convert it to the corresponding value
             return choices[result]
 
         return result
 
-    def _select_constraint(self, key: str, additional_info: str | None = None):
+    def _select_constraint(
+        self,
+        key: str,
+        additional_info: str | None = None,
+        presets: list[str] | None = None,
+    ):
         """Prompt user for a constraint to update a field."""
 
-        choices = [*self.CONSTRAINT_PRESETS, "No update"]
+        choices = [*(presets or self.CONSTRAINT_PRESETS), "No update"]
         result = self._choice(
             f"Update <b>[{key}]</b> to which constraint?",
             choices,
@@ -278,477 +386,314 @@ class Migrator:
         )
         return None if result == "No update" else parse_constraint(result)
 
+    # ------------------------------------------------------------------
+    # Orchestrator
+    # ------------------------------------------------------------------
+
     def run(self, pyproject_document: TOMLDocument) -> TOMLDocument:
         """Run migration."""
 
         from copy import deepcopy
 
-        from poetry.core.packages.dependency import Dependency
-        from poetry.core.packages.path_dependency import PathDependency
-        from tomlkit import array, inline_table, string, table
-
         new_document: dict[str, Any] = deepcopy(pyproject_document)
 
-        if (
-            "tool" not in new_document or "poetry" not in new_document["tool"]  # type: ignore[operator]
-        ):
+        tool_poetry = self._get_tool_poetry(new_document)
+        if tool_poetry is None:
+            return new_document  # type: ignore[return-value]
+
+        project = self._ensure_project_table(new_document)
+
+        # Phase 1: Direct field moves
+        self._migrate_direct_fields(tool_poetry, project)
+        self._migrate_urls(tool_poetry, project)
+        self._migrate_plugins(tool_poetry, project)
+        self._migrate_scripts(tool_poetry, project)
+
+        # Phase 2: User-prompted fields
+        self._migrate_version(tool_poetry, project)
+        self._migrate_classifiers(tool_poetry, project)
+        self._migrate_readme(tool_poetry, project)
+
+        # Phase 3: Value transforms
+        self._migrate_persons(tool_poetry, project)
+
+        # Phase 4: Dependencies (delegated)
+        if "dependencies" in tool_poetry:
+            from poetry_plugin_migrate.dependencies import DependencyMigrator
+
+            DependencyMigrator(self, tool_poetry, project).run()
+
+        # Phase 4b: PEP 735 groups. Optional standard groups require Poetry >=2.2.1.
+        if "group" in tool_poetry or "dev-dependencies" in tool_poetry:
+            from poetry_plugin_migrate.dependencies import DependencyGroupMigrator
+
+            DependencyGroupMigrator(self, new_document, tool_poetry).run()
+
+        # Phase 5: Metadata updates
+        self._migrate_requires_poetry(tool_poetry)
+        self._migrate_build_system(new_document)
+
+        # Clean up empty dependencies array
+        if "dependencies" in project and len(project["dependencies"]) == 0:
+            del project["dependencies"]
+
+        return new_document  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # Infrastructure helpers
+    # ------------------------------------------------------------------
+
+    def _get_tool_poetry(self, doc: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract [tool.poetry] from document, returning None if absent."""
+        if "tool" not in doc or "poetry" not in doc["tool"]:
             self.warnings.append(
                 "[tool.poetry] section not found. Related migration skipped."
             )
-        else:
-            # Migrate [tool.poetry]
+            return None
+        return doc["tool"]["poetry"]  # type: ignore[no-any-return]
 
-            if "project" not in new_document:
-                new_document["project"] = table()
+    def _ensure_project_table(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """Ensure [project] table exists and return it."""
+        from tomlkit import table
 
-            project = new_document["project"]
-            tool_poetry = new_document["tool"]["poetry"]
+        if "project" not in doc:
+            doc["project"] = table()
+        return doc["project"]  # type: ignore[no-any-return]
 
-            def add_dynamic(field: str):
-                """Add given field to [project.dynamic] and remove it from [project]."""
-                if field in project:
-                    self.warnings.append(
-                        f"[project.{field}] already exists and will be removed during adding it to [project.dynamic]."
-                    )
-                    del project[field]
-                if "dynamic" not in project:
-                    project["dynamic"] = array()
-                if field not in project["dynamic"]:
-                    project["dynamic"].append(field)
+    def _add_dynamic(self, project: dict[str, Any], field: str):
+        """Add given field to [project.dynamic] and remove it from [project]."""
+        from tomlkit import array
 
-            # Directly-moved fields
-            ## Same-named fields
-            for field in (
-                "name",
-                "description",
-                "license",
-                "keywords",
-            ):
+        if field in project:
+            self.warnings.append(
+                f"[project.{field}] already exists and will be removed during adding it to [project.dynamic]."
+            )
+            del project[field]
+        if "dynamic" not in project:
+            project["dynamic"] = array()
+            project["dynamic"].multiline(True)
+        if field not in project["dynamic"]:
+            project["dynamic"].append(field)
+
+    # ------------------------------------------------------------------
+    # Phase 1: Direct field moves
+    # ------------------------------------------------------------------
+
+    def _migrate_direct_fields(
+        self, tool_poetry: dict[str, Any], project: dict[str, Any]
+    ):
+        """Migrate same-named fields: name, description, license, keywords."""
+        for field in ("name", "description", "license", "keywords"):
+            self._move(
+                field,
+                tool_poetry,
+                project,
+                from_container_key="tool.poetry",
+                to_container_key="project",
+            )
+
+    def _migrate_urls(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate homepage/repository/documentation and custom [tool.poetry.urls]."""
+        from tomlkit import table
+
+        url_fields = ("homepage", "repository", "documentation")
+        if any(field in tool_poetry for field in url_fields) or "urls" in tool_poetry:
+            if "urls" not in project:
+                project["urls"] = table()
+            urls = project["urls"]
+            for field in url_fields:
                 self._move(
                     field,
-                    tool_poetry,
-                    project,
-                    from_container_key="tool.poetry",
-                    to_container_key="project",
-                )
-
-            ## URLs
-            url_fields = ("homepage", "repository", "documentation")
-            if any(field in tool_poetry for field in url_fields):
-                if "urls" not in project:
-                    project["urls"] = table()
-                urls = project["urls"]
-                for field in url_fields:
-                    self._move(
-                        field,
-                        tool_poetry,
-                        urls,
-                        from_container_key="tool.poetry",
-                        to_container_key="project.urls",
-                    )
-                self._move_sub_container(
-                    "urls",
                     tool_poetry,
                     urls,
                     from_container_key="tool.poetry",
                     to_container_key="project.urls",
                 )
+            self._move_sub_container(
+                "urls",
+                tool_poetry,
+                urls,
+                from_container_key="tool.poetry",
+                to_container_key="project.urls",
+            )
 
-            ## Plugins
-            if "plugins" in tool_poetry:
-                if "entry-points" not in project:
-                    project["entry-points"] = table()
-                entry_points = project["entry-points"]
+    def _migrate_plugins(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate [tool.poetry.plugins] to [project.entry-points]."""
+        from tomlkit import table
+
+        if "plugins" in tool_poetry:
+            if "entry-points" not in project:
+                project["entry-points"] = table()
+            self._move_sub_container(
+                "plugins",
+                tool_poetry,
+                project["entry-points"],
+                from_container_key="tool.poetry",
+                to_container_key="project.entry-points",
+            )
+
+    def _migrate_scripts(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate [tool.poetry.scripts] to [project.scripts], skipping file-type."""
+        from tomlkit import table
+
+        if "scripts" in tool_poetry:
+            if "scripts" not in project:
+                project["scripts"] = table()
+            self._move_sub_container(
+                "scripts",
+                tool_poetry,
+                project["scripts"],
+                from_container_key="tool.poetry",
+                to_container_key="project.scripts",
+                from_item_transformer=self._transform_script_item,
+            )
+
+    @staticmethod
+    def _transform_script_item(script_name: str, tool_poetry_scripts: dict[str, Any]):
+        script = tool_poetry_scripts[script_name]
+        if not isinstance(script, str):
+            raise SkipField()
+        return script
+
+    # ------------------------------------------------------------------
+    # Phase 2: User-prompted fields
+    # ------------------------------------------------------------------
+
+    def _migrate_version(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate version: prompt for dynamic vs static."""
+        if "version" not in tool_poetry:
+            return
+
+        if self._prompt(
+            "Keeps Poetry managing version in <b>[tool.poetry]</b> with dynamic versioning?",
+            default=False,
+            additional_info=(
+                "<b>[tool.poetry.version]</b> found. "
+                "If you want to set the version dynamically via "
+                "<info>poetry build --local-version</info> or you are using a plugin, which "
+                "sets the version dynamically, you should use dynamic versioning that "
+                "keeps 'version' in <b>[tool.poetry]</b> and "
+                "adds 'version' to <b>[project.dynamic]</b>. "
+                "Otherwise, 'version' will be moved to <b>[project]</b>."
+            ),
+        ):
+            self._add_dynamic(project, "version")
+        else:
+            self._move(
+                "version",
+                tool_poetry,
+                project,
+                from_container_key="tool.poetry",
+                to_container_key="project",
+            )
+
+    def _migrate_classifiers(
+        self, tool_poetry: dict[str, Any], project: dict[str, Any]
+    ):
+        """Migrate classifiers: prompt for auto-enrichment vs manual."""
+        from tomlkit import array
+
+        if "classifiers" not in tool_poetry:
+            return
+
+        if self._prompt(
+            "Keep Poetry managing classifiers in <b>[tool.poetry]</b> with auto-enrichment?",
+            default=True,
+            additional_info=(
+                "Per default Poetry determines classifiers for supported "
+                "Python versions and license automatically. If you define classifiers "
+                "in <b>[project]</b>, you disable the automatic enrichment. In other words, "
+                "you have to define all classifiers manually. "
+                "If you want to use Poetry's automatic enrichment of classifiers, "
+                "they should be kept in <b>[tool.poetry]</b> and 'classifiers' "
+                "should be added to <b>[project.dynamic]</b>. "
+            ),
+        ):
+            self._add_dynamic(project, "classifiers")
+        else:
+            if "classifiers" not in project:
+                project["classifiers"] = array()
+                project["classifiers"].multiline(True)
+            self._move_sub_container(
+                "classifiers",
+                tool_poetry,
+                project["classifiers"],
+                from_container_key="tool.poetry.classifiers",
+                to_container_key="project.classifiers",
+            )
+
+    def _migrate_readme(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate readme: single file moves to [project], multiple stay dynamic."""
+        if "readme" not in tool_poetry:
+            return
+
+        readme = tool_poetry["readme"]
+        if isinstance(readme, str):
+            self._move(
+                "readme",
+                tool_poetry,
+                project,
+                from_container_key="tool.poetry",
+                to_container_key="project",
+            )
+        elif isinstance(readme, list):
+            self._add_dynamic(project, "readme")
+        else:
+            self.warnings.append(
+                f"Unexpected type of [tool.poetry.readme]: {type(readme)}"
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 3: Value transforms
+    # ------------------------------------------------------------------
+
+    def _migrate_persons(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+        """Migrate authors and maintainers: "name <email>" -> {name, email}."""
+        from tomlkit import array
+
+        for arr_name in ("authors", "maintainers"):
+            if arr_name in tool_poetry:
+                if arr_name not in project:
+                    project[arr_name] = array()
+                    project[arr_name].multiline(True)
                 self._move_sub_container(
-                    "plugins",
+                    arr_name,
                     tool_poetry,
-                    entry_points,
+                    project[arr_name],
                     from_container_key="tool.poetry",
-                    to_container_key="project.entry-points",
+                    to_container_key=f"project.{arr_name}",
+                    from_item_transformer=self._transform_person_item,
                 )
 
-            ## Scripts
-            if "scripts" in tool_poetry:
-                if "scripts" not in project:
-                    project["scripts"] = table()
-                scripts = project["scripts"]
+    @staticmethod
+    def _transform_person_item(person_index: int, tool_poetry_person: list[str]):
+        from tomlkit import inline_table
 
-                def transform_script_item(
-                    script_name: str, tool_poetry_scripts: dict[str, Any]
-                ):
-                    script = tool_poetry_scripts[script_name]
-                    if not isinstance(script, str):
-                        # Keep scripts of type file in tool.poetry
-                        raise SkipField()
-                    return script
+        person = tool_poetry_person[person_index]
+        assert isinstance(person, str)
 
-                self._move_sub_container(
-                    "scripts",
-                    tool_poetry,
-                    scripts,
-                    from_container_key="tool.poetry",
-                    to_container_key="project.scripts",
-                    from_item_transformer=transform_script_item,
-                )
+        name, _, email = person.partition(" <")
+        email = email.rstrip(">")
 
-            # Fields needing prompt
-            ## version
-            if "version" in tool_poetry:
-                if self._prompt(
-                    "Keeps Poetry managing version in <b>[tool.poetry]</b> with dynamic versioning?",
-                    default=True,
-                    additional_info=(
-                        "<b>[tool.poetry.version]</b> found. "
-                        "If you want to set the version dynamically via "
-                        "<info>poetry build --local-version</info> or you are using a plugin, which "
-                        "sets the version dynamically, you should use dynamic versioning that "
-                        "keeps 'version' in <b>[tool.poetry]</b> and "
-                        "adds 'version' to <b>[project.dynamic]</b>. "
-                        "Otherwise, 'version' will be moved to <b>[project]</b>."
-                    ),
-                ):
-                    add_dynamic("version")
-                else:
-                    self._move(
-                        "version",
-                        tool_poetry,
-                        project,
-                        from_container_key="tool.poetry",
-                        to_container_key="project",
-                    )
+        result = inline_table()
+        result["name"] = name
+        if email:
+            result["email"] = email
 
-            ## classifiers
-            if "classifiers" in tool_poetry:
-                if self._prompt(
-                    "Keep Poetry managing classifiers in <b>[tool.poetry]</b> with auto-enrichment?",
-                    default=True,
-                    additional_info=(
-                        "Per default Poetry determines classifiers for supported "
-                        "Python versions and license automatically. If you define classifiers "
-                        "in <b>[project]</b>, you disable the automatic enrichment. In other words, "
-                        "you have to define all classifiers manually. "
-                        "If you want to use Poetry's automatic enrichment of classifiers, "
-                        "they should be kept in <b>[tool.poetry]</b> and 'classifiers' "
-                        "should be added to <b>[project.dynamic]</b>. "
-                    ),
-                ):
-                    add_dynamic("classifiers")
-                else:
-                    # Move classifiers to [project] and remove from [tool.poetry]
-                    self._move_sub_container(
-                        "classifiers",
-                        tool_poetry,
-                        project["classifiers"],
-                        from_container_key="tool.poetry.classifiers",
-                        to_container_key="project.classifiers",
-                    )
+        return result
 
-            ## readme
-            if "readme" in tool_poetry:
-                readme = tool_poetry["readme"]
-                if isinstance(readme, str):
-                    # Only one readme
-                    self._move(
-                        "readme",
-                        tool_poetry,
-                        project,
-                        from_container_key="tool.poetry",
-                        to_container_key="project",
-                    )
-                elif isinstance(readme, list):
-                    # Multiple readmes
-                    add_dynamic("readme")
-                else:
-                    self.warnings.append(
-                        f"Unexpected type of [tool.poetry.readme]: {type(readme)}"
-                    )
+    # ------------------------------------------------------------------
+    # Phase 5: Metadata updates
+    # ------------------------------------------------------------------
 
-            # Value-transformed fields
-            ## Authors, maintainers
-            def transform_person_item(person_index: int, tool_poetry_person: list[str]):
-                person = tool_poetry_person[person_index]
-                assert isinstance(person, str)
+    def _migrate_requires_poetry(self, tool_poetry: dict[str, Any]):
+        """Add or update [tool.poetry.requires-poetry]."""
+        from tomlkit import string
 
-                name, _, email = person.partition(" <")
-                email = email.rstrip(">")
-
-                result = inline_table()
-                result["name"] = name
-                if email:
-                    result["email"] = email
-
-                return result
-
-            for arr_name in ("authors", "maintainers"):
-                if arr_name in tool_poetry:
-                    if arr_name not in project:
-                        project[arr_name] = array()
-                    self._move_sub_container(
-                        arr_name,
-                        tool_poetry,
-                        project[arr_name],
-                        from_container_key="tool.poetry",
-                        to_container_key=f"project.{arr_name}",
-                        from_item_transformer=transform_person_item,
-                    )
-
-            ## Dependencies
-            if "dependencies" in tool_poetry:
-                tool_poetry_dependencies: dict[str, Any] = tool_poetry["dependencies"]
-
-                from poetry.core.factory import Factory
-
-                # Expand multiple constraints
-                MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX = "pypoetrymigrate$"
-                for package_name in tuple(tool_poetry_dependencies.keys()):
-                    constraints = tool_poetry_dependencies[package_name]
-                    if isinstance(constraints, list):
-                        for i, constraint in enumerate(constraints):
-                            temp_name = f"{MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX}{package_name}${i}"
-                            tool_poetry_dependencies[temp_name] = constraint
-                        del tool_poetry_dependencies[package_name]
-
-                def remove_fields_from_constraint(
-                    constraint: dict[str, Any],
-                    fields: list[str] = [],
-                    include_markers: bool = True,
-                ):
-                    if isinstance(constraint, dict):
-                        fields.extend(
-                            (
-                                "version",
-                                "git",
-                                "branch",
-                                "tag",
-                                "rev",
-                                "file",
-                                "path",
-                                "url",
-                                "subdirectory",
-                            )
-                        )
-                        if include_markers:
-                            fields.extend(
-                                (
-                                    "python",
-                                    "platform",
-                                    "markers",
-                                    "extras",  # This is extras for dependency itself, not the project
-                                )
-                            )
-
-                        for field in fields:
-                            if field in constraint:
-                                del constraint[field]
-
-                ### requires-python
-                if (
-                    "python" in tool_poetry_dependencies
-                    and "requires-python" not in project
-                ):
-                    # Python constraint only defined in [tool.poetry.dependencies]
-
-                    choices = [
-                        "Move to <b>[project.requires-python]</b>",
-                        "Add `requires-python` to <b>[project.dynamic]</b>",
-                        "Copy value to <b>[project.requires-python]</b>",
-                        "No migration and keep it as-is",
-                    ]
-                    migrate_python = self._choice(
-                        "How to migrate <b>[tool.poetry.dependencies.python]</b>?",
-                        choices,
-                        default=2,
-                    )
-                    if migrate_python in (choices[0], choices[2]):
-                        python_constraint = parse_constraint(
-                            tool_poetry_dependencies["python"]
-                        )
-                        project["requires-python"] = string(
-                            str(python_constraint), literal=self.literal
-                        )
-
-                        if migrate_python == choices[0]:
-                            # Remove python from [tool.poetry.dependencies]
-                            del tool_poetry_dependencies["python"]
-
-                    elif migrate_python == choices[1]:
-                        add_dynamic("requires-python")
-
-                ### Optional dependencies
-                if "extras" in tool_poetry:
-                    if "optional-dependencies" not in project:
-                        project["optional-dependencies"] = table()
-                    optional_dependencies = project["optional-dependencies"]
-
-                    def transform_optional_dependency_item(
-                        extra_cluster_name: str, tool_poetry_extras: dict[str, Any]
-                    ):
-                        extra_cluster: list[str] = tool_poetry_extras[
-                            extra_cluster_name
-                        ]
-                        for i in range(len(extra_cluster) - 1, -1, -1):
-                            package_name = extra_cluster[i]
-                            if package_name in tool_poetry_dependencies:
-                                constraint = tool_poetry_dependencies[package_name]
-                                dependency = Factory.create_dependency(
-                                    package_name, constraint
-                                )
-                                extra_cluster[i] = string(
-                                    dependency.to_pep_508(), literal=self.literal
-                                )
-
-                                # Clean up constraint
-                                # we leave "optional" here for later migration
-                                remove_fields_from_constraint(constraint)
-                                if len(constraint) == 0 or isinstance(constraint, str):
-                                    del tool_poetry_dependencies[package_name]
-                            else:
-                                # Consider expanded dependencies
-                                extras_to_insert = array()
-                                for dep, constraint in tool_poetry_dependencies.items():
-                                    if dep.startswith(
-                                        f"{MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX}{package_name}"
-                                    ):
-                                        extras_to_insert.append(
-                                            string(
-                                                Factory.create_dependency(
-                                                    package_name, constraint
-                                                ).to_pep_508(),
-                                                literal=self.literal,
-                                            )
-                                        )
-
-                                        # Clean up constraint
-                                        # we leave "optional" here for later migration
-                                        remove_fields_from_constraint(
-                                            constraint,
-                                            include_markers=False,  # keep markers for expanded dependencies
-                                        )
-                                        if len(constraint) == 0 or isinstance(
-                                            constraint, str
-                                        ):
-                                            del tool_poetry_dependencies[dep]
-
-                                if len(extras_to_insert) > 0:
-                                    extra_cluster.pop(i)
-                                    for extra in extras_to_insert:
-                                        extra_cluster.insert(i, extra)
-
-                        return extra_cluster
-
-                    self._move_sub_container(
-                        "extras",
-                        tool_poetry,
-                        optional_dependencies,
-                        from_container_key="tool.poetry",
-                        to_container_key="project.optional-dependencies",
-                        from_item_transformer=transform_optional_dependency_item,
-                    )
-
-                ### Dependencies
-                if self._prompt(
-                    "Keeps dependencies in <b>[tool.poetry]</b>?",
-                    additional_info=(
-                        "<b>[tool.poetry.dependencies]</b> found. "
-                        "`dependencies` will be added to <b>[project.dynamic]</b> "
-                        "if you want to keep it in <b>[tool.poetry]</b>. "
-                    ),
-                ):
-                    add_dynamic("dependencies")
-                else:
-                    # Move dependencies to [project] and remove from [tool.poetry]
-                    if "dependencies" not in project:
-                        project["dependencies"] = array()
-                    project_dependencies: list[str] = project["dependencies"]
-
-                    project_dependencies_objs = [
-                        Dependency.create_from_pep_508(constraint)
-                        for constraint in project_dependencies
-                    ]
-
-                    def transform_dependency_item(
-                        orig_name: str, tool_poetry_dependencies: dict[str, Any]
-                    ):
-                        constraint = tool_poetry_dependencies[orig_name]
-
-                        if orig_name.startswith(MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX):
-                            name = orig_name.split("$")[1]
-                        else:
-                            name = orig_name
-
-                        dependency = Factory.create_dependency(name, constraint)
-                        if dependency.name == "python" or (
-                            isinstance(dependency, PathDependency)
-                            and not dependency.path.is_absolute()
-                        ):
-                            # Skip if dependency is Python itself or if its path is relative
-                            raise SkipField()
-
-                        if any(
-                            project_dependency.name == dependency.name
-                            for project_dependency in project_dependencies_objs
-                        ):
-                            self.warnings.append(
-                                f"Dependency {dependency} is already defined in "
-                                "<b>[project.dependencies]</b> and it will be skipped."
-                            )
-                            raise SkipField()
-
-                        # Removes fields that can be presented with pep-508 str from constraint
-                        remove_fields_from_constraint(
-                            constraint,
-                            ["optional"],
-                            # keep markers for expanded dependencies
-                            include_markers=not orig_name.startswith(
-                                MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX
-                            ),
-                        )
-
-                        if dependency.is_optional():
-                            if len(constraint) == 0:
-                                # Remove from [tool.poetry.dependencies] if only optional
-                                del tool_poetry_dependencies[orig_name]
-                            raise SkipField()
-
-                        # Check if there's any field left in constraint
-                        if len(constraint) == 0 or isinstance(constraint, str):
-                            # Just return, it will be moved from [tool.poetry.dependencies]
-                            return string(dependency.to_pep_508(), literal=self.literal)
-                        else:
-                            # Its new value needs to be kept in [tool.poetry.dependencies]
-                            # while other parts that can be presented with pep-508 str
-                            # will be moved to [project]
-                            raise CopyModifiedField(
-                                string(dependency.to_pep_508(), literal=self.literal),
-                                constraint,
-                            )
-
-                    self._move_sub_container(
-                        "dependencies",
-                        tool_poetry,
-                        project_dependencies,
-                        from_container_key="tool.poetry",
-                        to_container_key="project.dependencies",
-                        from_item_transformer=transform_dependency_item,
-                    )
-
-                # Rebuild multiple constraints
-                for package_name in tuple(tool_poetry_dependencies.keys()):
-                    if package_name.startswith(MULTIPLE_CONSTRAINT_TEMP_NAME_PREFIX):
-                        constraint = tool_poetry_dependencies[package_name]
-                        original_package_name = package_name.split("$")[1]
-                        if original_package_name not in tool_poetry_dependencies:
-                            tool_poetry_dependencies[original_package_name] = array()
-                        target_constraints: list = tool_poetry_dependencies[
-                            original_package_name
-                        ]
-                        target_constraints.append(constraint)
-                        del tool_poetry_dependencies[package_name]
-
-        # Other changes
-        ## requires-poetry
         if "requires-poetry" not in tool_poetry:
-            target_constraint = self._select_constraint("tool.poetry.requires-poetry")
+            target_constraint = self._select_constraint(
+                "tool.poetry.requires-poetry", presets=self.POETRY_CONSTRAINT_PRESETS
+            )
             if target_constraint:
                 tool_poetry["requires-poetry"] = string(
                     str(target_constraint), literal=self.literal
@@ -761,10 +706,10 @@ class Migrator:
                     "<b>[tool.poetry.requires-poetry]</b> found with value "
                     f"<comment>{constraint}</comment>."
                 ),
+                presets=self.POETRY_CONSTRAINT_PRESETS,
             )
             if target_constraint:
                 if not constraint.intersect(target_constraint).is_empty():
-                    # Update only if selected constraint is compatible with current value
                     tool_poetry["requires-poetry"] = string(
                         str(target_constraint), literal=self.literal
                     )
@@ -774,25 +719,29 @@ class Migrator:
                         f"since current value {constraint} is not compatible with {target_constraint}."
                     )
 
-        ## build-system.requires
-        if "build-system" in new_document:
-            build_system = new_document["build-system"]
-            if "requires" in build_system:
-                requires = build_system["requires"]
-                for i, requirement in enumerate(requires):
-                    dependency = Dependency.create_from_pep_508(requirement)
-                    if dependency.name == "poetry-core":
-                        constraint = dependency.constraint
-                        if constraint.is_any():
-                            # Only ask for updating it when no constraint is set
-                            target_constraint = self._select_constraint(
-                                "build-system.requires.poetry-core"
-                            )
-                            if target_constraint:
-                                dependency.constraint = target_constraint  # type: ignore[assignment]
-                                requires[i] = string(
-                                    dependency.to_pep_508(), literal=self.literal
-                                )
-                            break
+    def _migrate_build_system(self, doc: dict[str, Any]):
+        """Update [build-system.requires] poetry-core version."""
+        from poetry.core.packages.dependency import Dependency
+        from tomlkit import string
 
-        return new_document  # type: ignore[return-value]
+        if "build-system" not in doc:
+            return
+        build_system = doc["build-system"]
+        if "requires" not in build_system:
+            return
+
+        requires = build_system["requires"]
+        for i, requirement in enumerate(requires):
+            dependency = Dependency.create_from_pep_508(requirement)
+            if dependency.name == "poetry-core":
+                constraint = dependency.constraint
+                if constraint.is_any():
+                    target_constraint = self._select_constraint(
+                        "build-system.requires.poetry-core"
+                    )
+                    if target_constraint:
+                        dependency.constraint = target_constraint
+                        requires[i] = string(
+                            dependency.to_pep_508(), literal=self.literal
+                        )
+                    break
