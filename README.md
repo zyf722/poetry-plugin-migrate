@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/github/license/zyf722/poetry-plugin-migrate)](LICENSE)
 [![PyPI version](https://img.shields.io/pypi/v/poetry-plugin-migrate?logo=pypi&logoColor=white&label=PyPI)](https://pypi.org/project/poetry-plugin-migrate/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/poetry-plugin-migrate?logo=python&logoColor=white&label=Python)](https://pypi.org/project/poetry-plugin-migrate/)
-[![Poetry version](https://img.shields.io/badge/Poetry-%3E%3D2.0-blue?logo=poetry&logoColor=white)](https://python-poetry.org/)
+[![Poetry version](https://img.shields.io/badge/Poetry-%3E%3D2.2.1-blue?logo=poetry&logoColor=white)](https://python-poetry.org/)
 [![Github Actions Build](https://img.shields.io/github/actions/workflow/status/zyf722/poetry-plugin-migrate/build.yml?logo=github)](https://github.com/zyf722/poetry-plugin-migrate/actions/workflows/build.yml)
 [![Code Coverage](https://img.shields.io/codecov/c/github/zyf722/poetry-plugin-migrate?logo=codecov&logoColor=white
 )](https://app.codecov.io/github/zyf722/poetry-plugin-migrate/)
@@ -35,10 +35,21 @@ pip install poetry-plugin-migrate
 
 ## Usage
 
-The plugin provides an `migrate` command to migrate current `pyproject.toml` to the new format:
+The plugin provides a `migrate` command to migrate the current `pyproject.toml` to the new format.
+
+Start with a dry run and inspect the output before writing the file:
+
+```bash
+poetry migrate --dry-run
+```
+
+Then run the migration, validate the result, and review the diff:
 
 ```bash
 poetry migrate
+poetry check --strict
+poetry lock
+git diff -- pyproject.toml poetry.lock
 ```
 
 By default, the command performs a `poetry check` before migration and then attempts to migrate the current `pyproject.toml` based on several [rules](#migration-rules) and the user's responses to interactive prompts. A backup file, `pyproject.bak.toml`, will be created before migration.
@@ -48,6 +59,7 @@ For better readability, TOML literal strings are used for string fields. If you 
 > **Note**: Internally, this plugin uses [`tomlkit`](https://github.com/python-poetry/tomlkit), a *style-preserving* TOML library, to parse and modify the `pyproject.toml` file. Hence, the migrated result might NOT be pretty-formatted and might need reformatting.
 
 ### Available Options
+- `-n` / `--no-interaction`: Skip interactive prompts and use default migration strategies. This is a global Poetry option.
 - `--no-check`: Skip `poetry check` for `pyproject.toml`.
 - `--check-strict`: Fail if check reports warnings.
 - `--no-backup`: Do not create a backup of `pyproject.toml` before migration.
@@ -83,8 +95,8 @@ The option marked with `(*)` is the default choice.
 #### `[tool.poetry.version]`
 You can **choose** one of the following strategies for this field:
 
-- (*) keep it in `[tool.poetry]`
-- or, move it to `[project]`
+- (*) move it to `[project]`
+- or, keep it in `[tool.poetry]`
 
 If you want to set the version dynamically via `poetry build --local-version` or you are using a plugin which sets the version dynamically, you should use *dynamic versioning* that keeps it in `[tool.poetry]` and adds `"version"` to `[project.dynamic]`.
 
@@ -129,10 +141,8 @@ See [Dependencies Migration](#dependencies-migration) for details on how depende
 #### `[tool.poetry.requires-poetry]`
 You can explicitly specify the required Poetry version in `[tool.poetry.requires-poetry]` since Poetry v2. Following constraints are available for you to **choose**:
 
-- `>=2.0`
-- `>=2.0,<3.0`
-- `>=2.0.0`
-- `>=2.0.0,<3.0.0`
+- `>=2.2.1`
+- `>=2.2.1,<3.0.0`
 - (*) No update
 
 #### `[build-system.requires]`
@@ -154,6 +164,29 @@ Fields that can be presented in a PEP-508 string (`version`, `git`, `branch`, `t
 Marker fields (`python`, `platform`, `markers`, `extras`) will only be removed if the constraint is NOT an expanded one from a multiple constraints dependency.
 
 Then, original entries with no fields left will be removed. Others (e.g. `{source = "private"}`) will be kept for locking.
+
+You can **choose** whether to remove brackets around version specifiers in the generated PEP-508 strings:
+
+- (*) remove them for PEP-508 compliance (e.g. `package>=1.0,<2.0`)
+- or, keep them for compatibility with old generated output (e.g. `package (>=1.0,<2.0)`)
+
+Per [PEP-508](https://peps.python.org/pep-0508/), brackets around version specifiers should not be generated, only accepted for compatibility with PEP-345.
+
+### Dependency Groups Migration
+
+Poetry 2.2 added support for standard [PEP-735 dependency groups](https://packaging.python.org/en/latest/specifications/dependency-groups/). Poetry 2.2.1 fixed support for declaring such a group as optional, so this plugin requires at least 2.2.1. The plugin migrates representable dependencies from `[tool.poetry.group.<name>.dependencies]` and the legacy `[tool.poetry.dev-dependencies]` table into `[dependency-groups]`.
+
+Poetry-specific group metadata remains in place. For example, an optional group is represented as:
+
+```toml
+[dependency-groups]
+docs = ["mkdocs>=1.6,<2.0"]
+
+[tool.poetry.group.docs]
+optional = true
+```
+
+`include-groups` entries become PEP-735 `{ include-group = "..." }` entries. If a group contains a dependency that cannot be represented safely—such as a relative path or a private `source`—the entire group is kept in its original Poetry table and a warning is emitted.
 
 ### Example
 This is an [example for testing](./tests/fixtures/poetry18/):
@@ -268,7 +301,6 @@ build-backend = "poetry.core.masonry.api"
 # Some comments on this line
 [tool.poetry]
 package-mode = false # Hey this should not be touched
-version = "1.2.3"
 readme = ["README1.md", "README2.md"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -311,11 +343,42 @@ name = "poetry-18"
 description = "Test project that contains a pyproject.toml with Poetry v1.8 metadata."
 license = "MIT"
 keywords = ["we", "just", "need", "some", "keywords", "for", "this", "project"]
-dynamic = ["version", "classifiers", "readme"]
-authors = [{name = "Test Guy", email = "test.guy@example.com"}, {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"}]
-maintainers = [{name = "Maintainer Two", email = "maintainer.two@other.example.com"}, {name = "Maintainer One", email = "maintainer.one@example.com"}]
+version = "1.2.3"
+dynamic = [
+    "classifiers",
+    "readme",
+]
+authors = [
+    {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"},
+    {name = "Test Guy", email = "test.guy@example.com"},
+]
+maintainers = [
+    {name = "Maintainer One", email = "maintainer.one@example.com"},
+    {name = "Maintainer Two", email = "maintainer.two@other.example.com"},
+]
 requires-python = '>=3.9,<4.0'
-dependencies = ['careter (>=1.2.3,<2.0.0)', 'tilder (>=1.2.3,<1.3.0)', 'wildcarder (==1.*)', 'inequalitier (>=1.2.3,<2.0.0)', 'exacter (==1.2.3)', 'equal-exacter (==1.2.3)', 'git-branch @ git+https://github.com/example/branch.git@next', 'git-rev @ git+https://github.com/example/rev.git@deadbeef', 'git-tag @ git+https://github.com/example/tag.git@1.2.3', 'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir', 'local-package-absolute @ file:///<% LOCAL_ABSOLUTE_PACKAGE %>', 'url @ https://example.com/url-package-0.1.0.tar.gz', 'baby[toy-1,toy-2] (>=0.12.0,<0.13.0)', 'spy', 'tomli (>=2.0.1,<3.0.0) ; python_version < "3.11"', 'pathlib2 (>=2.2,<3.0) ; python_version <= "3.4" or sys_platform == "win32"', 'big-guy (>=18.0.0) ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"', 'foo (>=2.0,<3.0) ; python_version >= "3.8" and sys_platform == "win32"', 'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"', 'foo (>=1.0,<2.0) ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"']
+dependencies = [
+    'careter>=1.2.3,<2.0.0',
+    'tilder>=1.2.3,<1.3.0',
+    'wildcarder==1.*',
+    'inequalitier>=1.2.3,<2.0.0',
+    'exacter==1.2.3',
+    'equal-exacter==1.2.3',
+    'git-branch @ git+https://github.com/example/branch.git@next',
+    'git-rev @ git+https://github.com/example/rev.git@deadbeef',
+    'git-tag @ git+https://github.com/example/tag.git@1.2.3',
+    'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir',
+    'local-package-absolute @ file:///<% LOCAL_ABSOLUTE_PACKAGE %>',
+    'url @ https://example.com/url-package-0.1.0.tar.gz',
+    'baby[toy-1,toy-2]>=0.12.0,<0.13.0',
+    'spy',
+    'tomli>=2.0.1,<3.0.0 ; python_version < "3.11"',
+    'pathlib2>=2.2,<3.0 ; python_version <= "3.4" or sys_platform == "win32"',
+    'big-guy>=18.0.0 ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"',
+    'foo>=2.0,<3.0 ; python_version >= "3.8" and sys_platform == "win32"',
+    'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"',
+    'foo>=1.0,<2.0 ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"',
+]
 
 [project.urls]
 homepage = "https://example.com/"
@@ -332,8 +395,15 @@ hi = "poetry18.plugins:ActuallyThereIsNoSuchPlugin"
 run_as_fast_as_possible = "poetry18.__main__:main"
 
 [project.optional-dependencies]
-birthday-present = ['chocolate (==3.0) ; sys_platform == "linux"','chocolate (>=2.0,<2.1) ; sys_platform == "darwin"','chocolate (>=1.0,<2.0) ; sys_platform == "win32"']
-networking = ['requests (>=2.0,<3.0) ; python_version >= "3.6" and python_version < "4.0"', 'httpx (>=0.23,<0.24) ; python_version >= "3.6" and python_version < "4.0"']
+birthday-present = [
+    'chocolate==3.0 ; sys_platform == "linux"',
+    'chocolate>=2.0,<2.1 ; sys_platform == "darwin"',
+    'chocolate>=1.0,<2.0 ; sys_platform == "win32"',
+]
+networking = [
+    'requests>=2.0,<3.0 ; python_version >= "3.6" and python_version < "4.0"',
+    'httpx>=0.23,<0.24 ; python_version >= "3.6" and python_version < "4.0"',
+]
 
 ```
 
