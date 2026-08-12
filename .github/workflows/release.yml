@@ -25,13 +25,16 @@ on:
         required: true
         default: false
 
-permissions:
-  contents: write
-
 jobs:
   publish:
     name: Publish and Release (${{ github.event.inputs.dry-run == 'true' && 'Dry Run' || 'Prod' }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/poetry-plugin-migrate
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -54,43 +57,62 @@ jobs:
       - name: Set Poetry environment
         run: |
           poetry env use python
-          poetry config pypi-token.pypi ${{ secrets.PYPI_TOKEN }}
 
       - name: Install dependencies
         run: poetry install
 
+      - name: Verify release branch
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "Releases must run from main, not $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+
+      - name: Run project checks
+        run: poetry run poe check
+
       - name: Semantic Release - Versioning
+        shell: bash
         run: |
-          FORCE_BUMP=${{ github.event.inputs.bump-version }}
-          if [[ "$FORCE_BUMP" = "auto" ]]; then
-            FORCE_BUMP=""
+          global_args=()
+          version_args=()
+          bump="${{ github.event.inputs.bump-version }}"
+
+          case "$bump" in
+            auto) ;;
+            major|minor|patch) version_args+=("--$bump") ;;
+            prerelease) version_args+=("--prerelease") ;;
+            *) echo "Unsupported bump level: $bump" >&2; exit 1 ;;
+          esac
+
+          if [[ "${{ github.event.inputs.as-prerelease }}" == "true" ]]; then
+            version_args+=("--as-prerelease")
           fi
 
-          AS_PRERELEASE=${{ github.event.inputs.as-prerelease }}
-          if [[ "$AS_PRERELEASE" = "true" ]]; then
-            AS_PRERELEASE="--prerelease"
-          else
-            AS_PRERELEASE=""
+          if [[ "${{ github.event.inputs.dry-run }}" == "true" ]]; then
+            global_args+=("-vv" "--noop")
           fi
 
-          if [[ "${{ github.event.inputs.dry-run }}" = "true" ]]; then
-            DRY_RUN="-vv --noop"
-          fi
+          poetry run semantic-release "${global_args[@]}" version "${version_args[@]}"
 
-          poetry run semantic-release $DRY_RUN version $FORCE_BUMP $AS_PRERELEASE
+      - name: Build distributions
+        run: poetry build
 
-      - name: Publish to PyPI
-        run: |
-          if [[ "${{ github.event.inputs.dry-run }}" = "true" ]]; then
-            DRY_RUN="--dry-run"
-          fi
+      - name: Validate a dry-run publication
+        if: ${{ github.event.inputs.dry-run == 'true' }}
+        run: poetry publish --dry-run
 
-          poetry publish --build $DRY_RUN
+      - name: Publish to PyPI with Trusted Publishing
+        if: ${{ github.event.inputs.dry-run != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Semantic Release - Assets
+        shell: bash
         run: |
-          if [[ "${{ github.event.inputs.dry-run }}" = "true" ]]; then
-            DRY_RUN="-vv --noop"
+          global_args=()
+          if [[ "${{ github.event.inputs.dry-run }}" == "true" ]]; then
+            global_args+=("-vv" "--noop")
           fi
 
-          poetry run semantic-release $DRY_RUN publish
+          poetry run semantic-release "${global_args[@]}" publish
