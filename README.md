@@ -47,8 +47,8 @@ Then run the migration, validate the result, and review the diff:
 
 ```bash
 poetry migrate
-poetry check --strict
 poetry lock
+poetry check --strict
 git diff -- pyproject.toml poetry.lock
 ```
 
@@ -156,6 +156,8 @@ You can also **choose** one of the following constraints of `poetry-core` for bu
 
 ### Dependencies Migration
 Entries in `[tool.poetry.dependencies]` and `[tool.poetry.extras]` will be migrated to [PEP-508](https://peps.python.org/pep-0508/) strings in `[project.dependencies]` and `[project.optional-dependencies]` respectively.
+
+Relative path dependencies cannot be represented portably in PEP-508 project metadata. If any main dependency uses a relative path, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model together and adds `"dependencies"` to `[project.dynamic]`. It does not partially migrate the remaining dependencies, because mixing the two models can make Poetry silently omit the relative dependency. If `[project.dependencies]` already exists in this situation, migration aborts with an explicit conflict instead of choosing one model and discarding the other.
 
 [Multiple constraints dependencies](https://python-poetry.org/docs/main/dependency-specification/#multiple-constraints-poetry) will be expanded into separate entries with temporary names before migration, which will then be merged into a single entry after all entries are migrated.
 
@@ -295,117 +297,7 @@ build-backend = "poetry.core.masonry.api"
 
 #### After (follows default migration strategies)
 
-```toml
-# This file is part of the poetry-plugin-migrate project.
-
-# Some comments on this line
-[tool.poetry]
-package-mode = false # Hey this should not be touched
-readme = ["README1.md", "README2.md"]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Topic :: Software Development",
-    "Topic :: System",
-    "Topic :: Terminals",
-    "Typing :: Typed",
-    "Operating System :: OS Independent",
-]
-packages = [{ include = "poetry18" }] # This should not be touched too
-
-[tool.poetry.scripts]
-poet = { reference = "write_some_poem.exe", type = "file" } # File-based scripts!
-
-[[tool.poetry.source]]
-name = "private"
-url = "http://a.source.too.secret/simple"
-priority = "supplemental"
-
-[tool.poetry.dependencies]
-python = "^3.9"
-local-package = { path = "../local_package/", develop = true }
-local-package-absolute = {  develop = true }
-spy = {  source = "private" }
-foo = [{ platform = "win32",  python = ">=3.8", source = "private" }, { platform = "darwin"  }, { platform = "linux",  python = ">=3.6,<3.8" }]
-chocolate = [{ platform = "win32",   source = "private" }, { platform = "darwin"   }, { platform = "linux"   }]
-
-[tool.poetry.dependencies.big-guy]
-allow-prereleases = true
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[project]
-name = "poetry-18"
-description = "Test project that contains a pyproject.toml with Poetry v1.8 metadata."
-license = "MIT"
-keywords = ["we", "just", "need", "some", "keywords", "for", "this", "project"]
-version = "1.2.3"
-dynamic = [
-    "classifiers",
-    "readme",
-]
-authors = [
-    {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"},
-    {name = "Test Guy", email = "test.guy@example.com"},
-]
-maintainers = [
-    {name = "Maintainer One", email = "maintainer.one@example.com"},
-    {name = "Maintainer Two", email = "maintainer.two@other.example.com"},
-]
-requires-python = '>=3.9,<4.0'
-dependencies = [
-    'careter>=1.2.3,<2.0.0',
-    'tilder>=1.2.3,<1.3.0',
-    'wildcarder==1.*',
-    'inequalitier>=1.2.3,<2.0.0',
-    'exacter==1.2.3',
-    'equal-exacter==1.2.3',
-    'git-branch @ git+https://github.com/example/branch.git@next',
-    'git-rev @ git+https://github.com/example/rev.git@deadbeef',
-    'git-tag @ git+https://github.com/example/tag.git@1.2.3',
-    'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir',
-    'local-package-absolute @ file:///<% LOCAL_ABSOLUTE_PACKAGE %>',
-    'url @ https://example.com/url-package-0.1.0.tar.gz',
-    'baby[toy-1,toy-2]>=0.12.0,<0.13.0',
-    'spy',
-    'tomli>=2.0.1,<3.0.0 ; python_version < "3.11"',
-    'pathlib2>=2.2,<3.0 ; python_version <= "3.4" or sys_platform == "win32"',
-    'big-guy>=18.0.0 ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"',
-    'foo>=2.0,<3.0 ; python_version >= "3.8" and sys_platform == "win32"',
-    'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"',
-    'foo>=1.0,<2.0 ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"',
-]
-
-[project.urls]
-homepage = "https://example.com/"
-repository = "https://github.com/zyf722/poetry-plugin-migrate"
-documentation = "https://anyway.we.need.a.documentation.website/"
-"Test custom URL" = "https://how.are.you/doing/"
-"Just another one" = "https://another.one/"
-
-[project.entry-points."poetry.application.plugin"]
-hi = "poetry18.plugins:ActuallyThereIsNoSuchPlugin"
-
-
-[project.scripts]
-run_as_fast_as_possible = "poetry18.__main__:main"
-
-[project.optional-dependencies]
-birthday-present = [
-    'chocolate==3.0 ; sys_platform == "linux"',
-    'chocolate>=2.0,<2.1 ; sys_platform == "darwin"',
-    'chocolate>=1.0,<2.0 ; sys_platform == "win32"',
-]
-networking = [
-    'requests>=2.0,<3.0 ; python_version >= "3.6" and python_version < "4.0"',
-    'httpx>=0.23,<0.24 ; python_version >= "3.6" and python_version < "4.0"',
-]
-
-```
+The fixture contains a relative path dependency, so the default result deliberately keeps its complete Poetry dependency model and marks `project.dependencies` as dynamic. The exact, tested output is maintained in [`non-interactive.expected.tpl.toml`](./tests/fixtures/poetry18/non-interactive.expected.tpl.toml) rather than duplicated here.
 
 ## Contributing
 This plugin still requires more testing and feedback to improve its quality and may contain bugs. Contributions in the form of [raising issues](https://github.com/zyf722/poetry-plugin-migrate/issues) and [code contributions](https://github.com/zyf722/poetry-plugin-migrate/pulls) are highly welcome.
