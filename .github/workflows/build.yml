@@ -18,41 +18,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  common-checks:
-    name: Pre-checks
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Check for typos
-        uses: crate-ci/typos@master
-
-      - name: Install Poetry
-        run: pipx install poetry
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
-          cache: poetry
-
-      - name: Set Poetry environment
-        run: poetry env use '${{ steps.python.outputs.python-path }}'
-
-      - name: Install dependencies
-        run: poetry install
-
-      - name: Lint code and check code formatting using ruff
-        run: |
-          poetry run ruff check
-          poetry run ruff format --check
-
-      - name: Type-check code using mypy
-        run: poetry run mypy .
-
   build:
     name: Test and Build
 
@@ -63,11 +28,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
-    needs: common-checks
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Check for typos
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
+        uses: crate-ci/typos@master
 
       - name: Install Poetry
         run: pipx install poetry
@@ -84,6 +52,10 @@ jobs:
         
       - name: Install dependencies
         run: poetry install
+
+      - name: Run static checks
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
+        run: poetry run poe static-check
 
       - name: Run tests
         run: poetry run pytest -v --cov=poetry_plugin_migrate --cov-report=xml:coverage.xml
