@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
+
+from tomlkit import TOMLDocument
+from tomlkit.items import Array, InlineTable, String
 
 from poetry_plugin_migrate.migrator import (
     CopyModifiedField,
@@ -10,11 +14,21 @@ from poetry_plugin_migrate.migrator import (
     SkipField,
     UpdateField,
 )
+from poetry_plugin_migrate.toml import (
+    TomlTable,
+    is_table,
+    require_array,
+    require_item,
+    require_table,
+)
 
 if TYPE_CHECKING:
-    from typing import Any
+    from poetry.core.packages.dependency import Dependency
 
     from poetry_plugin_migrate.migrator import Migrator
+
+
+DependencySpec: TypeAlias = str | Mapping[str, object]
 
 
 class DependencyMigrator:
@@ -23,14 +37,17 @@ class DependencyMigrator:
     MULTI_CONSTRAINT_PREFIX = "pypoetrymigrate$"
 
     def __init__(
-        self, migrator: Migrator, tool_poetry: dict[str, Any], project: dict[str, Any]
-    ):
+        self, migrator: Migrator, tool_poetry: TomlTable, project: TomlTable
+    ) -> None:
         self.migrator = migrator
         self.tool_poetry = tool_poetry
         self.project = project
-        self.deps: dict[str, Any] = tool_poetry["dependencies"]
+        self.deps = require_table(
+            tool_poetry["dependencies"], "tool.poetry.dependencies"
+        )
 
-    def run(self):
+    def run(self) -> None:
+        unsafe_dependencies = self._unsafe_main_dependencies()
         self.strip_brackets = self.migrator._prompt(
             "Remove brackets from PEP 508 version specifiers?",
             default=True,
@@ -41,21 +58,74 @@ class DependencyMigrator:
                 "Choose whether to remove them in the migrated output."
             ),
         )
-        self._expand_multi_constraints()
         self._migrate_requires_python()
+        if unsafe_dependencies:
+            self._keep_unsafe_dependencies(unsafe_dependencies)
+            return
+
+        self._expand_multi_constraints()
         self._migrate_optional_dependencies()
         self._migrate_main_dependencies()
         self._rebuild_multi_constraints()
+
+    def _unsafe_main_dependencies(self) -> list[str]:
+        """Return dependencies that cannot be represented safely in PEP 508."""
+        from poetry.core.factory import Factory
+        from poetry.core.packages.path_dependency import PathDependency
+
+        unsafe: list[str] = []
+        for package_name, raw_constraint in self.deps.items():
+            if package_name == "python":
+                continue
+            constraints: list[object] = (
+                list(raw_constraint)
+                if isinstance(raw_constraint, Array)
+                else [raw_constraint]
+            )
+            for constraint in constraints:
+                dependency = Factory.create_dependency(
+                    str(package_name),
+                    deepcopy(self._dependency_spec(constraint)),
+                )
+                if (
+                    isinstance(dependency, PathDependency)
+                    and not dependency.path.is_absolute()
+                ):
+                    unsafe.append(str(package_name))
+                    break
+        return unsafe
+
+    def _keep_unsafe_dependencies(self, unsafe_dependencies: list[str]) -> None:
+        """Keep the complete Poetry dependency model when migration is lossy."""
+        dependency_list = ", ".join(sorted(set(unsafe_dependencies)))
+        if "dependencies" in self.project:
+            raise ValueError(
+                "Cannot safely migrate Poetry dependencies because relative path "
+                f"dependencies ({dependency_list}) coexist with "
+                "[project.dependencies]. Remove the conflict or migrate these "
+                "dependencies manually."
+            )
+
+        reason = (
+            "Relative path dependencies cannot be represented portably in "
+            "PEP 508 project metadata."
+        )
+        self.migrator.warnings.append(
+            f"Dependencies {dependency_list} require Poetry-specific relative "
+            f"paths. {reason} All dependencies and extras were kept in "
+            "[tool.poetry] to preserve dependency semantics."
+        )
+        self.migrator._add_dynamic(self.project, "dependencies")
 
     # ------------------------------------------------------------------
     # Step 1: Expand multi-constraint dependencies
     # ------------------------------------------------------------------
 
-    def _expand_multi_constraints(self):
+    def _expand_multi_constraints(self) -> None:
         """Explode list constraints like [a, b] into temp keys."""
         for package_name in tuple(self.deps.keys()):
             constraints = self.deps[package_name]
-            if isinstance(constraints, list):
+            if isinstance(constraints, Array):
                 for i, constraint in enumerate(constraints):
                     temp_name = f"{self.MULTI_CONSTRAINT_PREFIX}{package_name}${i}"
                     self.deps[temp_name] = constraint
@@ -65,7 +135,7 @@ class DependencyMigrator:
     # Step 2: requires-python
     # ------------------------------------------------------------------
 
-    def _migrate_requires_python(self):
+    def _migrate_requires_python(self) -> None:
         """Handle migration of the python version constraint."""
         from poetry.core.constraints.version import parse_constraint
         from tomlkit import string
@@ -85,7 +155,10 @@ class DependencyMigrator:
             default=2,
         )
         if migrate_python in (choices[0], choices[2]):
-            python_constraint = parse_constraint(self.deps["python"])
+            python_value = self.deps["python"]
+            if not isinstance(python_value, str):
+                raise TypeError("[tool.poetry.dependencies.python] must be a string")
+            python_constraint = parse_constraint(python_value)
             self.project["requires-python"] = string(
                 str(python_constraint), literal=self.migrator.literal
             )
@@ -99,7 +172,7 @@ class DependencyMigrator:
     # Step 3: Optional dependencies (extras)
     # ------------------------------------------------------------------
 
-    def _migrate_optional_dependencies(self):
+    def _migrate_optional_dependencies(self) -> None:
         """Transform [tool.poetry.extras] into [project.optional-dependencies]."""
         from tomlkit import table
 
@@ -108,37 +181,53 @@ class DependencyMigrator:
 
         if "optional-dependencies" not in self.project:
             self.project["optional-dependencies"] = table()
+        optional_dependencies = require_table(
+            self.project["optional-dependencies"], "project.optional-dependencies"
+        )
 
         self.migrator._move_sub_container(
             "extras",
             self.tool_poetry,
-            self.project["optional-dependencies"],
+            optional_dependencies,
             from_container_key="tool.poetry",
             to_container_key="project.optional-dependencies",
-            from_item_transformer=self._transform_optional_dependency_item,
+            table_transformer=self._transform_optional_dependency_item,
         )
 
     def _transform_optional_dependency_item(
-        self, extra_cluster_name: str, tool_poetry_extras: dict[str, Any]
-    ):
+        self, extra_cluster_name: str, tool_poetry_extras: TomlTable
+    ) -> Array:
         from poetry.core.factory import Factory
-        from tomlkit import array, string
+        from tomlkit import array
 
         # Build the target from a copy. Sharing a mutable tomlkit Array between
         # source and target tables can corrupt the container's internal indexes.
-        extra_cluster: list[str] = deepcopy(tool_poetry_extras[extra_cluster_name])
+        extra_cluster = deepcopy(
+            require_array(
+                tool_poetry_extras[extra_cluster_name],
+                f"tool.poetry.extras.{extra_cluster_name}",
+            )
+        )
         for i in range(len(extra_cluster) - 1, -1, -1):
             package_name = extra_cluster[i]
-            if package_name in self.deps:
-                constraint = self.deps[package_name]
-                dependency = Factory.create_dependency(package_name, constraint)
-                extra_cluster[i] = string(
-                    self._strip_pep508_brackets(dependency.to_pep_508()),
-                    literal=self.migrator.literal,
+            if not isinstance(package_name, str):
+                raise TypeError(
+                    f"[tool.poetry.extras.{extra_cluster_name}] entries must be strings"
                 )
+            if package_name in self.deps:
+                constraint: object = self.deps[package_name]
+                dependency = Factory.create_dependency(
+                    package_name, self._dependency_spec(constraint)
+                )
+                extra_cluster[i] = self._pep508_string(
+                    dependency.to_pep_508(), constraint
+                )
+                self._preserve_comment_on_array(extra_cluster, constraint)
 
                 remaining_constraint = self._without_pep508_fields(constraint)
-                if len(remaining_constraint) == 0 or isinstance(constraint, str):
+                if isinstance(constraint, str) or (
+                    is_table(remaining_constraint) and len(remaining_constraint) == 0
+                ):
                     del self.deps[package_name]
                 else:
                     self.deps[package_name] = remaining_constraint
@@ -151,21 +240,21 @@ class DependencyMigrator:
                     ):
                         constraint = self.deps[dep_name]
                         extras_to_insert.append(
-                            string(
-                                self._strip_pep508_brackets(
-                                    Factory.create_dependency(
-                                        package_name, constraint
-                                    ).to_pep_508()
-                                ),
-                                literal=self.migrator.literal,
+                            self._pep508_string(
+                                Factory.create_dependency(
+                                    package_name, self._dependency_spec(constraint)
+                                ).to_pep_508(),
+                                constraint,
                             )
                         )
+                        self._preserve_comment_on_array(extra_cluster, constraint)
 
                         remaining_constraint = self._without_pep508_fields(
                             constraint, include_markers=False
                         )
-                        if len(remaining_constraint) == 0 or isinstance(
-                            constraint, str
+                        if isinstance(constraint, str) or (
+                            is_table(remaining_constraint)
+                            and len(remaining_constraint) == 0
                         ):
                             keys_to_delete.append(dep_name)
                         else:
@@ -188,7 +277,7 @@ class DependencyMigrator:
     # Step 4: Main dependencies
     # ------------------------------------------------------------------
 
-    def _migrate_main_dependencies(self):
+    def _migrate_main_dependencies(self) -> None:
         """Migrate main dependencies to [project.dependencies] or keep dynamic."""
         if self.migrator._prompt(
             "Keeps dependencies in <b>[tool.poetry]</b>?",
@@ -205,12 +294,18 @@ class DependencyMigrator:
 
         if "dependencies" not in self.project:
             self.project["dependencies"] = array()
-        self.project["dependencies"].multiline(True)
-        project_deps: list[str] = self.project["dependencies"]
+        project_deps = require_array(
+            self.project["dependencies"], "project.dependencies"
+        )
+        project_deps.multiline(True)
 
         from poetry.core.packages.dependency import Dependency
 
-        project_deps_objs = [Dependency.create_from_pep_508(c) for c in project_deps]
+        project_deps_objs: list[Dependency] = []
+        for requirement in project_deps:
+            if not isinstance(requirement, str):
+                raise TypeError("[project.dependencies] entries must be strings")
+            project_deps_objs.append(Dependency.create_from_pep_508(requirement))
 
         self.migrator._move_sub_container(
             "dependencies",
@@ -218,22 +313,21 @@ class DependencyMigrator:
             project_deps,
             from_container_key="tool.poetry",
             to_container_key="project.dependencies",
-            from_item_transformer=lambda orig_name, deps: (
-                self._transform_dependency_item(orig_name, deps, project_deps_objs)
+            table_transformer=lambda orig_name, deps: self._transform_dependency_item(
+                orig_name, deps, project_deps_objs
             ),
         )
 
     def _transform_dependency_item(
         self,
         orig_name: str,
-        tool_poetry_deps: dict[str, Any],
-        project_deps_objs: list,
-    ):
+        tool_poetry_deps: TomlTable,
+        project_deps_objs: list[Dependency],
+    ) -> object:
         from poetry.core.factory import Factory
         from poetry.core.packages.path_dependency import PathDependency
-        from tomlkit import string
 
-        original_constraint = tool_poetry_deps[orig_name]
+        original_constraint: object = tool_poetry_deps[orig_name]
         constraint = deepcopy(original_constraint)
 
         if orig_name.startswith(self.MULTI_CONSTRAINT_PREFIX):
@@ -241,7 +335,7 @@ class DependencyMigrator:
         else:
             name = orig_name
 
-        dependency = Factory.create_dependency(name, constraint)
+        dependency = Factory.create_dependency(name, self._dependency_spec(constraint))
         if dependency.name == "python" or (
             isinstance(dependency, PathDependency) and not dependency.path.is_absolute()
         ):
@@ -261,23 +355,16 @@ class DependencyMigrator:
         )
 
         if dependency.is_optional():
-            if (
-                not isinstance(remaining_constraint, dict)
-                or len(remaining_constraint) == 0
-            ):
+            if not is_table(remaining_constraint) or len(remaining_constraint) == 0:
                 raise RemoveField()
             raise UpdateField(remaining_constraint)
 
-        if len(remaining_constraint) == 0 or isinstance(constraint, str):
-            return string(
-                self._strip_pep508_brackets(dependency.to_pep_508()),
-                literal=self.migrator.literal,
-            )
+        if isinstance(constraint, str) or (
+            is_table(remaining_constraint) and len(remaining_constraint) == 0
+        ):
+            return self._pep508_string(dependency.to_pep_508(), original_constraint)
         raise CopyModifiedField(
-            string(
-                self._strip_pep508_brackets(dependency.to_pep_508()),
-                literal=self.migrator.literal,
-            ),
+            self._pep508_string(dependency.to_pep_508(), original_constraint),
             remaining_constraint,
         )
 
@@ -285,7 +372,7 @@ class DependencyMigrator:
     # Step 5: Rebuild multi-constraint dependencies
     # ------------------------------------------------------------------
 
-    def _rebuild_multi_constraints(self):
+    def _rebuild_multi_constraints(self) -> None:
         """Collapse temp keys back into arrays."""
         from tomlkit import array
 
@@ -295,7 +382,10 @@ class DependencyMigrator:
                 original = package_name.split("$")[1]
                 if original not in self.deps:
                     self.deps[original] = array()
-                self.deps[original].append(constraint)
+                rebuilt = require_array(
+                    self.deps[original], f"tool.poetry.dependencies.{original}"
+                )
+                rebuilt.append(constraint)
                 del self.deps[package_name]
 
     # ------------------------------------------------------------------
@@ -303,18 +393,30 @@ class DependencyMigrator:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _dependency_spec(value: object) -> DependencySpec:
+        """Narrow a TOML dependency value to Poetry's accepted input shape."""
+        if isinstance(value, str):
+            return value
+        if is_table(value):
+            return value
+        raise TypeError(
+            "Dependency constraints must be strings or tables, "
+            f"got {type(value).__name__}"
+        )
+
+    @staticmethod
     def _without_pep508_fields(
-        constraint: dict[str, Any],
+        constraint: object,
         extra_fields: list[str] | None = None,
         include_markers: bool = True,
-    ) -> Any:
+    ) -> object:
         """Return Poetry-only fields not representable in the PEP 508 string.
 
         Rebuild the TOML table instead of popping keys in place. tomlkit 0.15.0
         can retain separator tokens after removing inline-table entries, yielding
         invalid output such as ``, , python = ...``.
         """
-        if not isinstance(constraint, dict):
+        if not is_table(constraint):
             return constraint
         fields = list(extra_fields) if extra_fields else []
         fields.extend(
@@ -334,8 +436,7 @@ class DependencyMigrator:
             fields.extend(("python", "platform", "markers", "extras"))
         from tomlkit import inline_table, table
 
-        is_inline_table = getattr(constraint, "is_inline_table", None)
-        result = inline_table() if is_inline_table and is_inline_table() else table()
+        result = inline_table() if isinstance(constraint, InlineTable) else table()
         for field, value in constraint.items():
             if field not in fields:
                 result[field] = deepcopy(value)
@@ -351,6 +452,33 @@ class DependencyMigrator:
             return pep508
         return re.sub(r" \(([><=!~^][^)]*)\)", r"\1", pep508)
 
+    def _pep508_string(self, pep508: str, source: object) -> String:
+        """Create a PEP 508 string while retaining source-item trivia."""
+        from tomlkit import string
+
+        result = string(
+            self._strip_pep508_brackets(pep508), literal=self.migrator.literal
+        )
+        source_item = require_item(source, "dependency constraint")
+        result.trivia.indent = deepcopy(source_item.trivia.indent)
+        result.trivia.comment_ws = deepcopy(source_item.trivia.comment_ws)
+        result.trivia.comment = deepcopy(source_item.trivia.comment)
+        result.trivia.trail = deepcopy(source_item.trivia.trail)
+        return result
+
+    @staticmethod
+    def _preserve_comment_on_array(target: Array, source: object) -> None:
+        """Keep a dependency-definition comment when rebuilding an extras array."""
+        source_item = require_item(source, "dependency constraint")
+        comment = source_item.trivia.comment
+        if not comment:
+            return
+        text = comment.removeprefix("#").strip()
+        existing = target.trivia.comment
+        if existing:
+            text = f"{existing.removeprefix('#').strip()}; {text}"
+        target.comment(text)
+
 
 class DependencyGroupMigrator:
     """Migrate Poetry dependency groups to the PEP 735 table.
@@ -363,9 +491,9 @@ class DependencyGroupMigrator:
     def __init__(
         self,
         migrator: Migrator,
-        document: dict[str, Any],
-        tool_poetry: dict[str, Any],
-    ):
+        document: TOMLDocument,
+        tool_poetry: TomlTable,
+    ) -> None:
         self.migrator = migrator
         self.document = document
         self.tool_poetry = tool_poetry
@@ -375,7 +503,7 @@ class DependencyGroupMigrator:
 
         poetry_groups = self.tool_poetry.get("group")
         legacy_dev = self.tool_poetry.get("dev-dependencies")
-        if not isinstance(poetry_groups, dict) and not isinstance(legacy_dev, dict):
+        if not is_table(poetry_groups) and not is_table(legacy_dev):
             return
 
         dependency_groups = self.document.get("dependency-groups")
@@ -383,16 +511,16 @@ class DependencyGroupMigrator:
         if dependency_groups is None:
             dependency_groups = table()
             self.document["dependency-groups"] = dependency_groups
-        elif not isinstance(dependency_groups, dict):
+        elif not is_table(dependency_groups):
             self.migrator.warnings.append(
                 "[dependency-groups] is not a table. Poetry dependency groups were kept unchanged."
             )
             return
 
-        if isinstance(legacy_dev, dict):
+        if is_table(legacy_dev):
             self._migrate_legacy_dev(dependency_groups, legacy_dev)
 
-        if not isinstance(poetry_groups, dict):
+        if not is_table(poetry_groups):
             if created_dependency_groups and len(dependency_groups) == 0:
                 del self.document["dependency-groups"]
             return
@@ -403,7 +531,7 @@ class DependencyGroupMigrator:
 
         for group_name in original_group_names:
             group = poetry_groups[group_name]
-            if not isinstance(group, dict):
+            if not is_table(group):
                 self.migrator.warnings.append(
                     f"[tool.poetry.group.{group_name}] is not a table and was skipped."
                 )
@@ -439,7 +567,9 @@ class DependencyGroupMigrator:
         for group_name in fully_migrated:
             del poetry_groups[group_name]
         for group_name in partially_migrated:
-            group = poetry_groups[group_name]
+            group = require_table(
+                poetry_groups[group_name], f"tool.poetry.group.{group_name}"
+            )
             group.pop("dependencies", None)
             group.pop("include-groups", None)
 
@@ -447,11 +577,14 @@ class DependencyGroupMigrator:
             del self.document["dependency-groups"]
 
     def _migrate_legacy_dev(
-        self, dependency_groups: dict[str, Any], legacy_dev: dict[str, Any]
+        self, dependency_groups: TomlTable, legacy_dev: TomlTable
     ) -> None:
         if self._matching_group_name(dependency_groups, "dev") is not None or (
-            isinstance(self.tool_poetry.get("group"), dict)
-            and self._matching_group_name(self.tool_poetry["group"], "dev") is not None
+            is_table(self.tool_poetry.get("group"))
+            and self._matching_group_name(
+                require_table(self.tool_poetry["group"], "tool.poetry.group"), "dev"
+            )
+            is not None
         ):
             self.migrator.warnings.append(
                 "[tool.poetry.dev-dependencies] conflicts with an existing dev group and was kept."
@@ -467,7 +600,7 @@ class DependencyGroupMigrator:
         del self.tool_poetry["dev-dependencies"]
 
     @staticmethod
-    def _matching_group_name(groups: dict[str, Any], name: str) -> str | None:
+    def _matching_group_name(groups: TomlTable, name: str) -> str | None:
         """Find a group using PEP 735's normalized name comparison."""
         normalized_name = re.sub(r"[-_.]+", "-", name).lower()
         for existing_name in groups:
@@ -476,8 +609,8 @@ class DependencyGroupMigrator:
         return None
 
     def _convert_group(
-        self, group_name: str, group: dict[str, Any]
-    ) -> tuple[Any, set[str]] | None:
+        self, group_name: str, group: TomlTable
+    ) -> tuple[Array, set[str]] | None:
         from tomlkit import array, inline_table
 
         result = array()
@@ -486,7 +619,7 @@ class DependencyGroupMigrator:
 
         include_groups = group.get("include-groups")
         if include_groups is not None:
-            if not isinstance(include_groups, list) or not all(
+            if not isinstance(include_groups, Array) or not all(
                 isinstance(name, str) for name in include_groups
             ):
                 self.migrator.warnings.append(
@@ -501,17 +634,19 @@ class DependencyGroupMigrator:
 
         dependencies = group.get("dependencies")
         if dependencies is not None:
-            if not isinstance(dependencies, dict):
+            if not is_table(dependencies):
                 self.migrator.warnings.append(
                     f"[tool.poetry.group.{group_name}.dependencies] is not a table; group kept."
                 )
                 return None
             converted_dependencies = self._convert_dependencies(
-                f"tool.poetry.group.{group_name}.dependencies", dependencies
+                f"tool.poetry.group.{group_name}.dependencies",
+                dependencies,
+                result,
             )
             if converted_dependencies is None:
                 return None
-            result.extend(converted_dependencies)
+            result = converted_dependencies
             consumed_keys.add("dependencies")
 
         if len(consumed_keys) == 0:
@@ -519,22 +654,30 @@ class DependencyGroupMigrator:
         return result, consumed_keys
 
     def _convert_dependencies(
-        self, container_name: str, dependencies: dict[str, Any]
-    ) -> Any | None:
+        self,
+        container_name: str,
+        dependencies: TomlTable,
+        target: Array | None = None,
+    ) -> Array | None:
         from poetry.core.factory import Factory
         from poetry.core.packages.path_dependency import PathDependency
         from tomlkit import array, string
 
-        result = array()
+        result = target if target is not None else array()
         result.multiline(True)
 
         for dependency_name, raw_constraint in dependencies.items():
-            constraints = (
-                raw_constraint if isinstance(raw_constraint, list) else [raw_constraint]
+            constraints: list[object] = (
+                list(raw_constraint)
+                if isinstance(raw_constraint, Array)
+                else [raw_constraint]
             )
             for raw_item in constraints:
                 constraint = deepcopy(raw_item)
-                dependency = Factory.create_dependency(dependency_name, constraint)
+                dependency = Factory.create_dependency(
+                    dependency_name,
+                    DependencyMigrator._dependency_spec(constraint),
+                )
                 if (
                     isinstance(dependency, PathDependency)
                     and not dependency.path.is_absolute()
@@ -547,10 +690,7 @@ class DependencyGroupMigrator:
                 remaining_constraint = DependencyMigrator._without_pep508_fields(
                     constraint
                 )
-                if (
-                    isinstance(remaining_constraint, dict)
-                    and len(remaining_constraint) > 0
-                ):
+                if is_table(remaining_constraint) and len(remaining_constraint) > 0:
                     fields = ", ".join(
                         sorted(str(field) for field in remaining_constraint)
                     )
@@ -560,6 +700,14 @@ class DependencyGroupMigrator:
                     return None
 
                 pep508 = re.sub(r" \(([><=!~^][^)]*)\)", r"\1", dependency.to_pep_508())
-                result.append(string(pep508, literal=self.migrator.literal))
+                converted = string(pep508, literal=self.migrator.literal)
+                source_item = require_item(raw_item, "dependency constraint")
+                comment = source_item.trivia.comment
+                if comment:
+                    result.add_line(
+                        converted, comment=comment.removeprefix("#").lstrip()
+                    )
+                else:
+                    result.append(converted)
 
         return result

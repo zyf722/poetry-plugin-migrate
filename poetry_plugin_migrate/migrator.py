@@ -1,19 +1,40 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import ClassVar, Protocol
 
-from poetry.core.constraints.version import parse_constraint
+from poetry.core.constraints.version import VersionConstraint, parse_constraint
+from tomlkit import TOMLDocument
+from tomlkit.container import Container
+from tomlkit.items import Array, Item, Table
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any, ClassVar
+from poetry_plugin_migrate.toml import (
+    TomlTable,
+    is_table,
+    require_array,
+    require_table,
+)
 
-    from poetry.console.commands.command import Command
-    from tomlkit import TOMLDocument
 
-    ItemTransformer = (
-        Callable[[str, dict[str, Any]], Any] | Callable[[int, list[str]], Any]
-    )
+class MigrationCommand(Protocol):
+    """Console operations used by the migration engine."""
+
+    def line(self, text: str) -> None: ...
+
+    def confirm(self, question: str, default: bool = False) -> bool: ...
+
+    def choice(
+        self,
+        question: str,
+        choices: list[str],
+        default: int,
+        attempts: int | None = None,
+        multiple: bool = False,
+    ) -> object: ...
+
+
+TableTransformer = Callable[[str, TomlTable], object]
+ArrayTransformer = Callable[[int, list[object]], object]
 
 
 _UNSET = object()
@@ -32,7 +53,10 @@ class CopyModifiedField(Exception):  # noqa: N818
     Use `CopyModifiedField.args[0]` and `CopyModifiedField.args[1]` to get the new value for copy and update.
     """
 
-    pass
+    def __init__(self, target_value: object, update_value: object) -> None:
+        super().__init__()
+        self.target_value = target_value
+        self.update_value = update_value
 
 
 class RemoveField(Exception):  # noqa: N818
@@ -41,6 +65,10 @@ class RemoveField(Exception):  # noqa: N818
 
 class UpdateField(Exception):  # noqa: N818
     """Marker used when a transformer only needs to update the source field."""
+
+    def __init__(self, update_value: object) -> None:
+        super().__init__()
+        self.update_value = update_value
 
 
 class Migrator:
@@ -84,7 +112,7 @@ class Migrator:
     - Update `[build-system.requires]` to `poetry-core>=2.0.0,<3.0.0` if `poetry-core` is set (*prompt*)
     """
 
-    command: Command
+    command: MigrationCommand
     """Command instance to run migration in context of."""
 
     skip: bool
@@ -110,7 +138,7 @@ class Migrator:
     ]
     """Poetry constraints compatible with dependency-group migration."""
 
-    def __init__(self, command: Command, skip: bool, literal: bool):
+    def __init__(self, command: MigrationCommand, skip: bool, literal: bool) -> None:
         self.warnings = []
         self.skip = skip
         self.command = command
@@ -118,14 +146,14 @@ class Migrator:
 
     def _move(
         self,
-        field_or_index: str | int,
-        from_container: dict[str, Any] | list[Any],
-        to_container: dict[str, Any] | list[Any],
+        field: str,
+        from_container: TomlTable,
+        to_container: TomlTable | Array,
         *,
         from_container_key: str,
         to_container_key: str,
-        update_value: Any = _UNSET,
-        target_value: Any = _UNSET,
+        update_value: object = _UNSET,
+        target_value: object = _UNSET,
         remove_source: bool = True,
     ) -> bool:
         """
@@ -136,54 +164,46 @@ class Migrator:
         If `update_value` is set, copies the value to `to_container` instead of moving it,
         then updates the value in `from_container`.
         """
-        # Ensure the from_container is valid for the type of field_or_index
-        if isinstance(from_container, dict) and isinstance(field_or_index, str):
-            try:
-                field_value = from_container[field_or_index]
-            except KeyError:
-                return False
+        try:
+            field_value: object = from_container[field]
+        except KeyError:
+            return False
 
-        elif isinstance(from_container, list) and isinstance(field_or_index, int):
-            try:
-                field_value = from_container[field_or_index]
-            except IndexError:
-                return False
-        else:
-            raise ValueError("Invalid combination of field_or_index and from_container")
-
-        value_to_move = field_value if target_value is _UNSET else target_value
+        value_to_move: object = field_value if target_value is _UNSET else target_value
 
         # Move the field value to the to_container.  A different existing target
         # is a real conflict: preserve the legacy source instead of silently
         # deleting information the user has not accepted losing.
-        if isinstance(to_container, dict):
-            assert isinstance(field_or_index, str), (
-                "Expected field_or_index to be a string"
-            )
-            if field_or_index in to_container:
-                pretty_field = str(field_or_index)
-                if to_container[field_or_index] != value_to_move:
+        if not isinstance(to_container, Array):
+            if field in to_container:
+                if to_container[field] != value_to_move:
                     self.warnings.append(
-                        f"[{to_container_key}.{pretty_field}] and "
-                        f"[{from_container_key}.{pretty_field}] are both set to "
+                        f"[{to_container_key}.{field}] and "
+                        f"[{from_container_key}.{field}] are both set to "
                         "different values. Both values were kept."
                     )
                     return False
                 self.warnings.append(
-                    f"[{to_container_key}.{pretty_field}] and [{from_container_key}.{pretty_field}] are both set. "
+                    f"[{to_container_key}.{field}] and [{from_container_key}.{field}] are both set. "
                     "The duplicate legacy value will be removed."
                 )
             else:
-                to_container[field_or_index] = value_to_move
+                to_container[field] = value_to_move
 
-        elif isinstance(to_container, list):
+        else:
             if value_to_move in to_container:
                 self.warnings.append(
                     f"Value {value_to_move} is already in [{to_container_key}] "
                     f"and will be removed from [{from_container_key}]."
                 )
             else:
-                to_container.append(value_to_move)
+                if isinstance(value_to_move, Item) and value_to_move.trivia.comment:
+                    to_container.add_line(
+                        value_to_move,
+                        comment=value_to_move.trivia.comment.removeprefix("#").lstrip(),
+                    )
+                else:
+                    to_container.append(value_to_move)
 
         # Remove / update field in from_container
         if remove_source:
@@ -191,23 +211,24 @@ class Migrator:
                 # Dependency transformers normally mutate a copied value and
                 # return it here. Avoid assigning the exact same object because
                 # tomlkit containers maintain additional internal indexes.
-                if from_container[field_or_index] is not update_value:  # type: ignore[index]
-                    from_container[field_or_index] = update_value  # type: ignore[index]
+                if from_container[field] is not update_value:
+                    from_container[field] = update_value
             else:
-                del from_container[field_or_index]  # type: ignore[arg-type]
+                del from_container[field]
 
         return True
 
     def _move_sub_container(
         self,
         sub_container_name: str,
-        from_container: dict[str, Any],
-        to_container: dict[str, Any] | list[Any],
+        from_container: TomlTable,
+        to_container: TomlTable | Array,
         *,
         from_container_key: str,
         to_container_key: str,
-        from_item_transformer: ItemTransformer | None = None,
-    ):
+        table_transformer: TableTransformer | None = None,
+        array_transformer: ArrayTransformer | None = None,
+    ) -> None:
         """
         Move all items in a table/array in `from_container` to `to_container`.
 
@@ -218,14 +239,14 @@ class Migrator:
 
         from_sub_container = from_container[sub_container_name]
 
-        if isinstance(from_sub_container, dict):
+        if is_table(from_sub_container):
             original_keys = tuple(from_sub_container.keys())
             moved_keys: list[str] = []
-            updates: dict[str, Any] = {}
+            updates: dict[str, object] = {}
             for from_key in original_keys:
                 # Do not run a potentially mutating transformer when the target
                 # already contains a different value for the same key.
-                if isinstance(to_container, dict) and from_key in to_container:
+                if is_table(to_container) and from_key in to_container:
                     self.warnings.append(
                         f"[{to_container_key}.{from_key}] and "
                         f"[{from_container_key}.{sub_container_name}.{from_key}] "
@@ -236,23 +257,20 @@ class Migrator:
                 update_value = _UNSET
                 target_value = _UNSET
 
-                if from_item_transformer:
+                if table_transformer:
                     try:
-                        target_value = from_item_transformer(
-                            from_key,
-                            from_sub_container,  # type: ignore[arg-type]
-                        )
+                        target_value = table_transformer(from_key, from_sub_container)
                     except SkipField:
                         continue
                     except RemoveField:
                         moved_keys.append(from_key)
                         continue
                     except UpdateField as e:
-                        updates[from_key] = e.args[0]
+                        updates[from_key] = e.update_value
                         continue
                     except CopyModifiedField as e:
-                        target_value = e.args[0]
-                        update_value = e.args[1]
+                        target_value = e.target_value
+                        update_value = e.update_value
 
                 moved = self._move(
                     from_key,
@@ -288,8 +306,8 @@ class Migrator:
                 if from_sub_container[from_key] is not update_value:
                     from_sub_container[from_key] = update_value
 
-        elif isinstance(from_sub_container, list):
-            if not isinstance(to_container, list):
+        elif isinstance(from_sub_container, Array):
+            if not isinstance(to_container, Array):
                 raise TypeError(
                     f"Cannot move list [{from_container_key}.{sub_container_name}] "
                     f"to non-list [{to_container_key}]"
@@ -297,17 +315,14 @@ class Migrator:
 
             # Collect items in forward order to preserve original ordering.
             # items_to_move and items_to_keep hold the (possibly transformed) values.
-            items_to_move: list[Any] = []
-            items_to_keep: list[Any] = []
-            source_values = list(from_sub_container)
+            items_to_move: list[object] = []
+            items_to_keep: list[object] = []
+            source_values: list[object] = list(from_sub_container)
             for i, source_value in enumerate(source_values):
                 transformed_value = source_value
-                if from_item_transformer:
+                if array_transformer:
                     try:
-                        transformed_value = from_item_transformer(
-                            i,  # type: ignore[arg-type]
-                            source_values,  # type: ignore[arg-type]
-                        )
+                        transformed_value = array_transformer(i, source_values)
                     except SkipField:
                         items_to_keep.append(source_value)
                         continue
@@ -352,29 +367,29 @@ class Migrator:
         choices: list[str],
         default: int,
         attempts: int | None = None,
-        multiple: bool = False,
         additional_info: str | None = None,
-    ):
+    ) -> str:
         """Prompt user for a choice from a list of choices."""
 
         if self.skip:
             return choices[default]
         if additional_info:
             self.command.line(additional_info)
-        result = self.command.choice(question, choices, default, attempts, multiple)
+        result = self.command.choice(question, choices, default, attempts, False)
         self.command.line("")
 
         if isinstance(result, int):
             return choices[result]
-
-        return result
+        if isinstance(result, str):
+            return result
+        raise TypeError(f"Expected a single choice, got {type(result).__name__}")
 
     def _select_constraint(
         self,
         key: str,
         additional_info: str | None = None,
         presets: list[str] | None = None,
-    ):
+    ) -> VersionConstraint | None:
         """Prompt user for a constraint to update a field."""
 
         choices = [*(presets or self.CONSTRAINT_PRESETS), "No update"]
@@ -395,11 +410,18 @@ class Migrator:
 
         from copy import deepcopy
 
-        new_document: dict[str, Any] = deepcopy(pyproject_document)
+        new_document: TOMLDocument = deepcopy(pyproject_document)
+
+        # tomlkit represents tables whose declarations are separated by other
+        # top-level tables with an OutOfOrderTableProxy. Deleting keys through
+        # that proxy can invalidate its table indexes after one backing table
+        # becomes empty. Consolidate only [tool.poetry] before any mutation so
+        # all later operations use an ordinary Table.
+        self._consolidate_tool_poetry(new_document)
 
         tool_poetry = self._get_tool_poetry(new_document)
         if tool_poetry is None:
-            return new_document  # type: ignore[return-value]
+            return new_document
 
         project = self._ensure_project_table(new_document)
 
@@ -434,33 +456,93 @@ class Migrator:
         self._migrate_build_system(new_document)
 
         # Clean up empty dependencies array
-        if "dependencies" in project and len(project["dependencies"]) == 0:
+        project_dependencies = project.get("dependencies")
+        if isinstance(project_dependencies, Array) and len(project_dependencies) == 0:
             del project["dependencies"]
 
-        return new_document  # type: ignore[return-value]
+        return new_document
+
+    @staticmethod
+    def _consolidate_tool_poetry(doc: TOMLDocument) -> None:
+        """Replace a split ``[tool.poetry]`` proxy with one real table.
+
+        TOML permits child tables such as ``[tool.poetry.dependencies]`` to be
+        declared after unrelated tables. tomlkit exposes the resulting parent
+        as an ``OutOfOrderTableProxy``. Its deletion bookkeeping is unsafe for
+        the migration's repeated moves, so merge the proxy's backing tables
+        before editing them. Existing tomlkit items are moved rather than
+        recreated, preserving their values and attached trivia.
+        """
+        from tomlkit.container import OutOfOrderTableProxy
+
+        tool = doc.get("tool")
+        if not is_table(tool):
+            return
+        tool_poetry = tool.get("poetry")
+        if not isinstance(tool_poetry, OutOfOrderTableProxy):
+            return
+
+        backing_tables = list(tool_poetry._tables)
+        if len(backing_tables) < 2:
+            return
+
+        combined_body = [
+            (key, item)
+            for backing_table in backing_tables
+            for key, item in backing_table.value.body
+        ]
+        target = backing_tables[-1]
+        target.clear()
+        for key, item in combined_body:
+            target.append(key, item)
+
+        def remove_table(container: Container, table_to_remove: Table) -> bool:
+            for index, (_key, item) in enumerate(list(container.body)):
+                if item is table_to_remove:
+                    # A container can hold more than one out-of-order table
+                    # with the same key. Removing by key would also remove the
+                    # consolidated target, so remove this exact body item.
+                    container._remove_at(index)
+                    return True
+                if isinstance(item, Table) and remove_table(
+                    item.value, table_to_remove
+                ):
+                    return True
+            return False
+
+        for backing_table in backing_tables[:-1]:
+            if not remove_table(doc, backing_table):
+                raise RuntimeError("Could not consolidate split [tool.poetry] table")
 
     # ------------------------------------------------------------------
     # Infrastructure helpers
     # ------------------------------------------------------------------
 
-    def _get_tool_poetry(self, doc: dict[str, Any]) -> dict[str, Any] | None:
+    def _get_tool_poetry(self, doc: TOMLDocument) -> TomlTable | None:
         """Extract [tool.poetry] from document, returning None if absent."""
-        if "tool" not in doc or "poetry" not in doc["tool"]:
+        tool = doc.get("tool")
+        if not is_table(tool):
             self.warnings.append(
                 "[tool.poetry] section not found. Related migration skipped."
             )
             return None
-        return doc["tool"]["poetry"]  # type: ignore[no-any-return]
+        tool_poetry = tool.get("poetry")
+        if not is_table(tool_poetry):
+            self.warnings.append(
+                "[tool.poetry] section not found. Related migration skipped."
+            )
+            return None
+        return tool_poetry
 
-    def _ensure_project_table(self, doc: dict[str, Any]) -> dict[str, Any]:
+    def _ensure_project_table(self, doc: TOMLDocument) -> TomlTable:
         """Ensure [project] table exists and return it."""
         from tomlkit import table
 
         if "project" not in doc:
             doc["project"] = table()
-        return doc["project"]  # type: ignore[no-any-return]
+        return require_table(doc["project"], "project")
 
-    def _add_dynamic(self, project: dict[str, Any], field: str):
+    def _add_dynamic(self, project: TomlTable, field: str) -> None:
         """Add given field to [project.dynamic] and remove it from [project]."""
         from tomlkit import array
 
@@ -471,17 +553,18 @@ class Migrator:
             del project[field]
         if "dynamic" not in project:
             project["dynamic"] = array()
-            project["dynamic"].multiline(True)
-        if field not in project["dynamic"]:
-            project["dynamic"].append(field)
+        dynamic = require_array(project["dynamic"], "project.dynamic")
+        dynamic.multiline(True)
+        if field not in dynamic:
+            dynamic.append(field)
 
     # ------------------------------------------------------------------
     # Phase 1: Direct field moves
     # ------------------------------------------------------------------
 
     def _migrate_direct_fields(
-        self, tool_poetry: dict[str, Any], project: dict[str, Any]
-    ):
+        self, tool_poetry: TomlTable, project: TomlTable
+    ) -> None:
         """Migrate same-named fields: name, description, license, keywords."""
         for field in ("name", "description", "license", "keywords"):
             self._move(
@@ -492,7 +575,7 @@ class Migrator:
                 to_container_key="project",
             )
 
-    def _migrate_urls(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_urls(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate homepage/repository/documentation and custom [tool.poetry.urls]."""
         from tomlkit import table
 
@@ -500,7 +583,7 @@ class Migrator:
         if any(field in tool_poetry for field in url_fields) or "urls" in tool_poetry:
             if "urls" not in project:
                 project["urls"] = table()
-            urls = project["urls"]
+            urls = require_table(project["urls"], "project.urls")
             for field in url_fields:
                 self._move(
                     field,
@@ -517,39 +600,43 @@ class Migrator:
                 to_container_key="project.urls",
             )
 
-    def _migrate_plugins(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_plugins(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate [tool.poetry.plugins] to [project.entry-points]."""
         from tomlkit import table
 
         if "plugins" in tool_poetry:
             if "entry-points" not in project:
                 project["entry-points"] = table()
+            entry_points = require_table(
+                project["entry-points"], "project.entry-points"
+            )
             self._move_sub_container(
                 "plugins",
                 tool_poetry,
-                project["entry-points"],
+                entry_points,
                 from_container_key="tool.poetry",
                 to_container_key="project.entry-points",
             )
 
-    def _migrate_scripts(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_scripts(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate [tool.poetry.scripts] to [project.scripts], skipping file-type."""
         from tomlkit import table
 
         if "scripts" in tool_poetry:
             if "scripts" not in project:
                 project["scripts"] = table()
+            scripts = require_table(project["scripts"], "project.scripts")
             self._move_sub_container(
                 "scripts",
                 tool_poetry,
-                project["scripts"],
+                scripts,
                 from_container_key="tool.poetry",
                 to_container_key="project.scripts",
-                from_item_transformer=self._transform_script_item,
+                table_transformer=self._transform_script_item,
             )
 
     @staticmethod
-    def _transform_script_item(script_name: str, tool_poetry_scripts: dict[str, Any]):
+    def _transform_script_item(script_name: str, tool_poetry_scripts: TomlTable) -> str:
         script = tool_poetry_scripts[script_name]
         if not isinstance(script, str):
             raise SkipField()
@@ -559,7 +646,7 @@ class Migrator:
     # Phase 2: User-prompted fields
     # ------------------------------------------------------------------
 
-    def _migrate_version(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_version(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate version: prompt for dynamic vs static."""
         if "version" not in tool_poetry:
             return
@@ -587,9 +674,7 @@ class Migrator:
                 to_container_key="project",
             )
 
-    def _migrate_classifiers(
-        self, tool_poetry: dict[str, Any], project: dict[str, Any]
-    ):
+    def _migrate_classifiers(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate classifiers: prompt for auto-enrichment vs manual."""
         from tomlkit import array
 
@@ -613,16 +698,17 @@ class Migrator:
         else:
             if "classifiers" not in project:
                 project["classifiers"] = array()
-                project["classifiers"].multiline(True)
+            classifiers = require_array(project["classifiers"], "project.classifiers")
+            classifiers.multiline(True)
             self._move_sub_container(
                 "classifiers",
                 tool_poetry,
-                project["classifiers"],
+                classifiers,
                 from_container_key="tool.poetry.classifiers",
                 to_container_key="project.classifiers",
             )
 
-    def _migrate_readme(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_readme(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate readme: single file moves to [project], multiple stay dynamic."""
         if "readme" not in tool_poetry:
             return
@@ -636,7 +722,7 @@ class Migrator:
                 from_container_key="tool.poetry",
                 to_container_key="project",
             )
-        elif isinstance(readme, list):
+        elif isinstance(readme, Array):
             self._add_dynamic(project, "readme")
         else:
             self.warnings.append(
@@ -647,7 +733,7 @@ class Migrator:
     # Phase 3: Value transforms
     # ------------------------------------------------------------------
 
-    def _migrate_persons(self, tool_poetry: dict[str, Any], project: dict[str, Any]):
+    def _migrate_persons(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate authors and maintainers: "name <email>" -> {name, email}."""
         from tomlkit import array
 
@@ -655,18 +741,21 @@ class Migrator:
             if arr_name in tool_poetry:
                 if arr_name not in project:
                     project[arr_name] = array()
-                    project[arr_name].multiline(True)
+                people = require_array(project[arr_name], f"project.{arr_name}")
+                people.multiline(True)
                 self._move_sub_container(
                     arr_name,
                     tool_poetry,
-                    project[arr_name],
+                    people,
                     from_container_key="tool.poetry",
                     to_container_key=f"project.{arr_name}",
-                    from_item_transformer=self._transform_person_item,
+                    array_transformer=self._transform_person_item,
                 )
 
     @staticmethod
-    def _transform_person_item(person_index: int, tool_poetry_person: list[str]):
+    def _transform_person_item(
+        person_index: int, tool_poetry_person: list[object]
+    ) -> object:
         from tomlkit import inline_table
 
         person = tool_poetry_person[person_index]
@@ -686,7 +775,7 @@ class Migrator:
     # Phase 5: Metadata updates
     # ------------------------------------------------------------------
 
-    def _migrate_requires_poetry(self, tool_poetry: dict[str, Any]):
+    def _migrate_requires_poetry(self, tool_poetry: TomlTable) -> None:
         """Add or update [tool.poetry.requires-poetry]."""
         from tomlkit import string
 
@@ -719,19 +808,21 @@ class Migrator:
                         f"since current value {constraint} is not compatible with {target_constraint}."
                     )
 
-    def _migrate_build_system(self, doc: dict[str, Any]):
+    def _migrate_build_system(self, doc: TOMLDocument) -> None:
         """Update [build-system.requires] poetry-core version."""
         from poetry.core.packages.dependency import Dependency
         from tomlkit import string
 
         if "build-system" not in doc:
             return
-        build_system = doc["build-system"]
+        build_system = require_table(doc["build-system"], "build-system")
         if "requires" not in build_system:
             return
 
-        requires = build_system["requires"]
+        requires = require_array(build_system["requires"], "build-system.requires")
         for i, requirement in enumerate(requires):
+            if not isinstance(requirement, str):
+                raise TypeError("[build-system.requires] entries must be strings")
             dependency = Dependency.create_from_pep_508(requirement)
             if dependency.name == "poetry-core":
                 constraint = dependency.constraint
