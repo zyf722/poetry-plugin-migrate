@@ -157,7 +157,7 @@ You can also **choose** one of the following constraints of `poetry-core` for bu
 ### Dependencies Migration
 Entries in `[tool.poetry.dependencies]` and `[tool.poetry.extras]` will be migrated to [PEP-508](https://peps.python.org/pep-0508/) strings in `[project.dependencies]` and `[project.optional-dependencies]` respectively.
 
-Relative path dependencies cannot be represented portably in PEP-508 project metadata. If any main dependency uses a relative path, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model together and adds `"dependencies"` to `[project.dynamic]`. It does not partially migrate the remaining dependencies, because mixing the two models can make Poetry silently omit the relative dependency. If `[project.dependencies]` already exists in this situation, migration aborts with an explicit conflict instead of choosing one model and discarding the other.
+Some dependency semantics cannot be represented completely in PEP-508 project metadata. These include relative paths and Poetry-only fields such as `source`, `allow-prereleases`, or `develop`. If any main dependency uses such a feature, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model together and adds `"dependencies"` to `[project.dynamic]`. It does not partially migrate the remaining dependencies, because Poetry does not merge every legacy-only field back into standardized dependencies. If `[project.dependencies]` already exists in this situation, migration aborts with an explicit conflict instead of choosing one model and discarding the other.
 
 [Multiple constraints dependencies](https://python-poetry.org/docs/main/dependency-specification/#multiple-constraints-poetry) will be expanded into separate entries with temporary names before migration, which will then be merged into a single entry after all entries are migrated.
 
@@ -297,7 +297,7 @@ build-backend = "poetry.core.masonry.api"
 
 #### After (follows default migration strategies)
 
-The fixture contains a relative path dependency, so the default result deliberately keeps its complete Poetry dependency model and marks `project.dependencies` as dynamic. The exact, tested output is maintained in [`non-interactive.expected.tpl.toml`](./tests/fixtures/poetry18/non-interactive.expected.tpl.toml) rather than duplicated here.
+The fixture contains dependency semantics that are not completely representable in PEP 508, so the default result deliberately keeps its complete Poetry dependency model and marks `project.dependencies` as dynamic. The exact, tested output is maintained in [`non-interactive.expected.tpl.toml`](./tests/fixtures/poetry18/non-interactive.expected.tpl.toml) rather than duplicated here.
 
 ## Contributing
 This plugin still requires more testing and feedback to improve its quality and may contain bugs. Contributions in the form of [raising issues](https://github.com/zyf722/poetry-plugin-migrate/issues) and [code contributions](https://github.com/zyf722/poetry-plugin-migrate/pulls) are highly welcome.
