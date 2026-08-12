@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from shutil import copy2
 from typing import TYPE_CHECKING
 
 from cleo.helpers import option
@@ -8,23 +9,19 @@ from poetry.console.commands.command import Command
 from poetry_plugin_migrate.migrator import Migrator
 
 if TYPE_CHECKING:
-    from typing import Callable
+    from typing import ClassVar
 
-    from tomlkit.items import Item
-
-    ItemTransformer = (
-        Callable[[str, dict[str, Item]], Item] | Callable[[int, list[Item]], Item]
-    )
+    from cleo.io.inputs.option import Option
 
 
 class MigrateCommand(Command):
     name = "migrate"
-    description = (
+    description: str = (
         "Migrate <comment>pyproject.toml</comment> "
         "from Poetry v1 to v2 (PEP-621 compliant)."
     )
 
-    options = [
+    options: ClassVar[list[Option]] = [
         option(
             long_name="no-check",
             short_name=None,
@@ -67,11 +64,9 @@ class MigrateCommand(Command):
             check_strict = self.option("check-strict")
 
             self.write(
-                (
-                    "\n<b>Checking</> the current project:"
-                    f" <c1>{self.poetry.package.pretty_name}</c1>"
-                    f" (<c2>{self.poetry.package.pretty_version}</c2>)\n"
-                )
+                "\n<b>Checking</> the current project:"
+                f" <c1>{self.poetry.package.pretty_name}</c1>"
+                f" (<c2>{self.poetry.package.pretty_version}</c2>)\n"
             )
             self.line("")
 
@@ -93,7 +88,7 @@ class MigrateCommand(Command):
             )
             self.line(f"Creating backup at <c1>{pyproject_backup_file_path}</>")
             self.line("")
-            pyproject_backup_file_path.write_text(self.poetry.file.path.read_text())
+            copy2(pyproject_file_path, pyproject_backup_file_path)
 
         self.line("Migrating <comment>pyproject.toml</comment>...")
         self.line("")
@@ -127,3 +122,5 @@ class MigrateCommand(Command):
             self.line(
                 "It is recommended to run <info>poetry lock && poetry install</info> after migration."
             )
+
+        return None
