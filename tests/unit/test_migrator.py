@@ -42,6 +42,20 @@ class MovePythonCommand(StubCommand):
         return choices[default]
 
 
+class UpdateBuildRequirementCommand(StubCommand):
+    def choice(
+        self,
+        question: str,
+        choices: list[str],
+        default: int,
+        _attempts: int | None = None,
+        _multiple: bool = False,
+    ) -> str:
+        if "build-system.requires.poetry-core" in question:
+            return choices[0]
+        return choices[default]
+
+
 def migrate(source: str) -> tuple[TOMLDocument, Migrator]:
     migrator = Migrator(StubCommand(), skip=True, literal=False)
     return migrator.run(parse(source)), migrator
@@ -60,6 +74,22 @@ version = "1.0.0"
     assert migrator.warnings == [
         "[tool.poetry] section not found. Related migration skipped."
     ]
+
+
+def test_updated_build_requirement_uses_shared_pep508_renderer() -> None:
+    document = parse(
+        """\
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+"""
+    )
+    migrator = Migrator(UpdateBuildRequirementCommand(), skip=False, literal=False)
+
+    migrator._migrate_build_system(document)
+
+    build_system = require_table(document["build-system"], "build-system")
+    assert build_system["requires"] == ["poetry-core>=2.0"]
 
 
 def test_custom_urls_migrate_without_predefined_url_fields() -> None:

@@ -60,6 +60,49 @@ httpx = "^0.28"
         Dependency.create_from_pep_508(requirement)
 
 
+def test_unrepresentable_constraint_keeps_complete_dependency_model(
+    tmp_path: Path,
+) -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry]
+name = "dummy-union-project"
+version = "1.0.0"
+description = "Synthetic unrepresentable dependency"
+authors = []
+
+[tool.poetry.extras]
+feature = ["dummy-union"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-safe = "^1.0"
+dummy-union = { version = ">=1,<2 || >=3,<4", optional = true }
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    dependencies = require_table(
+        tool_poetry["dependencies"], "tool.poetry.dependencies"
+    )
+    extras = require_table(tool_poetry["extras"], "tool.poetry.extras")
+
+    assert "dependencies" not in project
+    assert project["dynamic"] == ["dependencies"]
+    assert dependencies["dummy-safe"] == "^1.0"
+    assert dependencies["dummy-union"] == {
+        "version": ">=1,<2 || >=3,<4",
+        "optional": True,
+    }
+    assert extras["feature"] == ["dummy-union"]
+    assert any("PEP 508 round-trip failed" in warning for warning in migrator.warnings)
+
+    (tmp_path / "pyproject.toml").write_text(result.as_string())
+    assert Factory().create_poetry(tmp_path).package.name == "dummy-union-project"
+
+
 def test_existing_project_dependency_array_becomes_multiline() -> None:
     result, _ = migrate(
         """\
