@@ -34,7 +34,7 @@ def from_template(template: str) -> str:
 
 
 @pytest.fixture
-def project(request: pytest.FixtureRequest, tmp_path: Path):
+def project(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
     project_name: str = request.param
     fixture_path = FIXTURES_DIR / project_name
     project_path = tmp_path / project_name
@@ -57,7 +57,7 @@ def pyproject_file(project: Path) -> Path:
 
 
 @pytest.fixture
-def expected_file(request: pytest.FixtureRequest, project: Path):
+def expected_file(request: pytest.FixtureRequest, project: Path) -> Path:
     expected_file_name: str = request.param
 
     expected_pyproject_path = project / EXPECTED_TOML
@@ -73,7 +73,7 @@ def expected_file(request: pytest.FixtureRequest, project: Path):
 
 
 @pytest.fixture
-def application_tester(project: Path):
+def application_tester(project: Path) -> ApplicationTester:
     app = Application()
     app._poetry = Factory().create_poetry(project)
     return ApplicationTester(app)

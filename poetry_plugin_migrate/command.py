@@ -52,7 +52,7 @@ class MigrateCommand(Command):
         ),
     ]
 
-    def handle(self):
+    def handle(self) -> int:
         no_check = self.option("no-check")
         dry_run = self.option("dry-run")
         quiet = self.option("quiet")
@@ -123,4 +123,4 @@ class MigrateCommand(Command):
                 "It is recommended to run <info>poetry lock && poetry install</info> after migration."
             )
 
-        return None
+        return 0
