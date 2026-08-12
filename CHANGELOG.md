@@ -1,6 +1,65 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-08-12)
+
+### Bug Fixes
+
+- **command**: Preserve exact migration backups
+  ([`5f29c9a`](https://github.com/zyf722/poetry-plugin-migrate/commit/5f29c9a759d7122c4a0d79c03ebdafabf4292c7e))
+
+### Build System
+
+- **deps**: Resolve Dependabot alerts
+  ([`0b425f7`](https://github.com/zyf722/poetry-plugin-migrate/commit/0b425f777a059521aafb779034627379728a300c))
+
+- **deps**: Update rapidfuzz for Python 3.14
+  ([`f34749d`](https://github.com/zyf722/poetry-plugin-migrate/commit/f34749ddb89d8680a85ed96b9fac16191fd7868a))
+
+- **poe**: Add static check task
+  ([`dcc10e2`](https://github.com/zyf722/poetry-plugin-migrate/commit/dcc10e2b0723870f0e208835ef8cbd1de087ca89))
+
+- **poetry**: Update Python and Poetry support
+  ([#8](https://github.com/zyf722/poetry-plugin-migrate/pull/8),
+  [`71e4da4`](https://github.com/zyf722/poetry-plugin-migrate/commit/71e4da4acd99088c39c1d9ca2a4f238353d7caae))
+
+### Chores
+
+- **license**: Update copyright year
+  ([`b779e72`](https://github.com/zyf722/poetry-plugin-migrate/commit/b779e72b98517696f44673e16a99111849b3912b))
+
+### Continuous Integration
+
+- **release**: Release through protected main
+  ([`d67e956`](https://github.com/zyf722/poetry-plugin-migrate/commit/d67e9569c6994093f618c72960777953382bf582))
+
+- **release**: Secure trusted publishing
+  ([`3e2285f`](https://github.com/zyf722/poetry-plugin-migrate/commit/3e2285fae8786e904c269960233eae77c4f6d2c8))
+
+- **test**: Expand compatibility matrix
+  ([#8](https://github.com/zyf722/poetry-plugin-migrate/pull/8),
+  [`89fe6c3`](https://github.com/zyf722/poetry-plugin-migrate/commit/89fe6c34d797a139252b02984b9cbf415a96e2bd))
+
+- **test**: Reuse matrix environment for checks
+  ([`d618f12`](https://github.com/zyf722/poetry-plugin-migrate/commit/d618f1217319aa347777b533da279ec1e6fd6759))
+
+### Documentation
+
+- **readme**: Document migration workflow
+  ([#4](https://github.com/zyf722/poetry-plugin-migrate/pull/4),
+  [`4f58433`](https://github.com/zyf722/poetry-plugin-migrate/commit/4f584333e4dc3ab29a23c3cb4d4c70a1794ebd25))
+
+### Features
+
+- **migrator**: Harden project migration (#1, #2, #3, #5, #6, #7)
+  ([`e47a875`](https://github.com/zyf722/poetry-plugin-migrate/commit/e47a875dba56246cc97317c6dc17cbc3c894f184))
+
+### Testing
+
+- **migration**: Cover safety regressions (#1, #5, #7)
+  ([`0ec69e3`](https://github.com/zyf722/poetry-plugin-migrate/commit/0ec69e37dcbf8ba27398f18e9a1ff98cd51d4ff7))
+
+
 ## v0.1.1 (2025-01-27)
 
 ### Bug Fixes
