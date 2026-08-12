@@ -157,7 +157,7 @@ You can also **choose** one of the following constraints of `poetry-core` for bu
 ### Dependencies Migration
 Entries in `[tool.poetry.dependencies]` and `[tool.poetry.extras]` will be migrated to [PEP-508](https://peps.python.org/pep-0508/) strings in `[project.dependencies]` and `[project.optional-dependencies]` respectively.
 
-Some dependency semantics cannot be represented completely in PEP-508 project metadata. These include relative paths and Poetry-only fields such as `source`, `allow-prereleases`, or `develop`. If any main dependency uses such a feature, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model together and adds `"dependencies"` to `[project.dynamic]`. It does not partially migrate the remaining dependencies, because Poetry does not merge every legacy-only field back into standardized dependencies. If `[project.dependencies]` already exists in this situation, migration aborts with an explicit conflict instead of choosing one model and discarding the other.
+Some dependency semantics cannot be represented completely in PEP-508 project metadata. These include relative paths, Poetry-only fields such as `source`, `allow-prereleases`, or `develop`, and version unions such as `>=1,<2 || >=3,<4`. Every generated requirement is parsed by both `packaging` and Poetry and must round-trip without changing its constraint, extras, markers, or direct-reference source. If any main dependency fails this check, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model together and adds `"dependencies"` to `[project.dynamic]`. It does not partially migrate the remaining dependencies, because Poetry does not merge every legacy-only field back into standardized dependencies. If `[project.dependencies]` already exists in this situation, migration aborts with an explicit conflict instead of choosing one model and discarding the other.
 
 [Multiple constraints dependencies](https://python-poetry.org/docs/main/dependency-specification/#multiple-constraints-poetry) will be expanded into separate entries with temporary names before migration, which will then be merged into a single entry after all entries are migrated.
 
@@ -174,9 +174,11 @@ You can **choose** whether to remove brackets around version specifiers in the g
 
 Per [PEP-508](https://peps.python.org/pep-0508/), brackets around version specifiers should not be generated, only accepted for compatibility with PEP-345.
 
+Removing brackets is performed from parsed requirement fields rather than by editing the generated string. Constraint order, marker contents, and direct-reference formatting are otherwise preserved.
+
 ### Dependency Groups Migration
 
-Poetry 2.2 added support for standard [PEP-735 dependency groups](https://packaging.python.org/en/latest/specifications/dependency-groups/). Poetry 2.2.1 fixed support for declaring such a group as optional, so this plugin requires at least 2.2.1. The plugin migrates representable dependencies from `[tool.poetry.group.<name>.dependencies]` and the legacy `[tool.poetry.dev-dependencies]` table into `[dependency-groups]`.
+Poetry 2.2 added support for standard [PEP-735 dependency groups](https://packaging.python.org/en/latest/specifications/dependency-groups/). Poetry 2.2.1 fixed support for declaring such a group as optional, so this plugin requires at least 2.2.1. The plugin migrates representable dependencies from `[tool.poetry.group.<name>.dependencies]` and the legacy `[tool.poetry.dev-dependencies]` table into `[dependency-groups]`. If any dependency does not pass the PEP-508 round-trip check, the complete Poetry group is kept.
 
 Poetry-specific group metadata remains in place. For example, an optional group is represented as:
 
