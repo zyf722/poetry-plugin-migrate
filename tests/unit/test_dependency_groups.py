@@ -27,6 +27,13 @@ class StubCommand:
         return choices[default]
 
 
+class KeepBracketsCommand(StubCommand):
+    def confirm(self, question: str, default: bool = False) -> bool:
+        if "Remove brackets" in question:
+            return False
+        return default
+
+
 def migrate(source: str) -> tuple[TOMLDocument, Migrator]:
     migrator = Migrator(StubCommand(), skip=True, literal=False)
     return migrator.run(parse(source)), migrator
@@ -104,6 +111,67 @@ internal = { version = "^1.0", source = "private" }
     assert any(
         "Poetry-only fields (source)" in warning for warning in migrator.warnings
     )
+
+
+def test_non_pep508_constraint_keeps_whole_group() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.group.test.dependencies]
+dummy-safe = "^1.0"
+dummy-union = ">=1,<2 || >=3,<4"
+"""
+    )
+
+    assert "dependency-groups" not in result
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    groups = require_table(tool_poetry["group"], "tool.poetry.group")
+    test_group = require_table(groups["test"], "tool.poetry.group.test")
+    dependencies = require_table(
+        test_group["dependencies"], "tool.poetry.group.test.dependencies"
+    )
+    assert dependencies["dummy-safe"] == "^1.0"
+    assert dependencies["dummy-union"] == ">=1,<2 || >=3,<4"
+    assert any(
+        "cannot be represented safely" in warning for warning in migrator.warnings
+    )
+
+
+def test_non_pep508_constraint_keeps_legacy_dev_dependencies() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.dev-dependencies]
+dummy-safe = "^1.0"
+dummy-union = ">=1,<2 || >=3,<4"
+"""
+    )
+
+    assert "dependency-groups" not in result
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    dependencies = require_table(
+        tool_poetry["dev-dependencies"], "tool.poetry.dev-dependencies"
+    )
+    assert dependencies["dummy-safe"] == "^1.0"
+    assert dependencies["dummy-union"] == ">=1,<2 || >=3,<4"
+    assert any(
+        "cannot be represented safely" in warning for warning in migrator.warnings
+    )
+
+
+def test_group_dependencies_can_keep_version_brackets() -> None:
+    migrator = Migrator(KeepBracketsCommand(), skip=False, literal=False)
+    result = migrator.run(
+        parse(
+            """\
+[tool.poetry.group.test.dependencies]
+dummy = "^1.0"
+"""
+        )
+    )
+
+    groups = require_table(result["dependency-groups"], "dependency-groups")
+    assert groups["test"] == ["dummy (>=1.0,<2.0)"]
 
 
 def test_relative_path_dependency_keeps_whole_group() -> None:
