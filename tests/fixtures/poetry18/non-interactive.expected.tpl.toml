@@ -3,7 +3,6 @@
 # Some comments on this line
 [tool.poetry]
 package-mode = false # Hey this should not be touched
-version = "1.2.3"
 readme = ["README1.md", "README2.md"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -29,10 +28,10 @@ priority = "supplemental"
 [tool.poetry.dependencies]
 python = "^3.9"
 local-package = { path = "../local_package/", develop = true }
-local-absolute-package = {  develop = true }
-spy = {  source = "private" }
-foo = [{ platform = "win32",  python = ">=3.8", source = "private" }, { platform = "darwin"  }, { platform = "linux",  python = ">=3.6,<3.8" }]
-chocolate = [{ platform = "win32",   source = "private" }, { platform = "darwin"   }, { platform = "linux"   }]
+local-absolute-package = {develop = true}
+spy = {source = "private"}
+foo = [{platform = "win32", python = ">=3.8", source = "private"}, {platform = "darwin"}, {platform = "linux", python = ">=3.6,<3.8"}]
+chocolate = [{platform = "win32", source = "private"}, {platform = "darwin"}, {platform = "linux"}]
 
 [tool.poetry.dependencies.big-guy]
 allow-prereleases = true
@@ -46,11 +45,42 @@ name = "poetry-18"
 description = "Test project that contains a pyproject.toml with Poetry v1.8 metadata."
 license = "MIT"
 keywords = ["we", "just", "need", "some", "keywords", "for", "this", "project"]
-dynamic = ["version", "classifiers", "readme"]
-authors = [{name = "Test Guy", email = "test.guy@example.com"}, {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"}]
-maintainers = [{name = "Maintainer Two", email = "maintainer.two@other.example.com"}, {name = "Maintainer One", email = "maintainer.one@example.com"}]
+version = "1.2.3"
+dynamic = [
+    "classifiers",
+    "readme",
+]
+authors = [
+    {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"},
+    {name = "Test Guy", email = "test.guy@example.com"},
+]
+maintainers = [
+    {name = "Maintainer One", email = "maintainer.one@example.com"},
+    {name = "Maintainer Two", email = "maintainer.two@other.example.com"},
+]
 requires-python = '>=3.9,<4.0'
-dependencies = ['careter (>=1.2.3,<2.0.0)', 'tilder (>=1.2.3,<1.3.0)', 'wildcarder (==1.*)', 'inequalitier (>=1.2.3,<2.0.0)', 'exacter (==1.2.3)', 'equal-exacter (==1.2.3)', 'git-branch @ git+https://github.com/example/branch.git@next', 'git-rev @ git+https://github.com/example/rev.git@deadbeef', 'git-tag @ git+https://github.com/example/tag.git@1.2.3', 'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir', 'local-absolute-package @ file://<% LOCAL_ABSOLUTE_PACKAGE_FILE %>', 'url @ https://example.com/url-package-0.1.0.tar.gz', 'baby[toy-1,toy-2] (>=0.12.0,<0.13.0)', 'spy', 'tomli (>=2.0.1,<3.0.0) ; python_version < "3.11"', 'pathlib2 (>=2.2,<3.0) ; python_version <= "3.4" or sys_platform == "win32"', 'big-guy (>=18.0.0) ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"', 'foo (>=2.0,<3.0) ; python_version >= "3.8" and sys_platform == "win32"', 'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"', 'foo (>=1.0,<2.0) ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"']
+dependencies = [
+    'careter>=1.2.3,<2.0.0',
+    'tilder>=1.2.3,<1.3.0',
+    'wildcarder==1.*',
+    'inequalitier>=1.2.3,<2.0.0',
+    'exacter==1.2.3',
+    'equal-exacter==1.2.3',
+    'git-branch @ git+https://github.com/example/branch.git@next',
+    'git-rev @ git+https://github.com/example/rev.git@deadbeef',
+    'git-tag @ git+https://github.com/example/tag.git@1.2.3',
+    'git-subdir @ git+https://github.com/example/subdir.git#subdirectory=subdir',
+    'local-absolute-package @ file://<% LOCAL_ABSOLUTE_PACKAGE_FILE %>',
+    'url @ https://example.com/url-package-0.1.0.tar.gz',
+    'baby[toy-1,toy-2]>=0.12.0,<0.13.0',
+    'spy',
+    'tomli>=2.0.1,<3.0.0 ; python_version < "3.11"',
+    'pathlib2>=2.2,<3.0 ; python_version <= "3.4" or sys_platform == "win32"',
+    'big-guy>=18.0.0 ; python_version >= "3.9" and python_version < "4.0" and platform_python_implementation == "CPython"',
+    'foo>=2.0,<3.0 ; python_version >= "3.8" and sys_platform == "win32"',
+    'foo @ https://example.com/example-1.0-py3-none-any.whl ; sys_platform == "darwin"',
+    'foo>=1.0,<2.0 ; python_version >= "3.6" and python_version < "3.8" and sys_platform == "linux"',
+]
 
 [project.urls]
 homepage = "https://example.com/"
@@ -67,5 +97,12 @@ hi = "poetry18.plugins:ActuallyThereIsNoSuchPlugin"
 run_as_fast_as_possible = "poetry18.__main__:main"
 
 [project.optional-dependencies]
-birthday-present = ['chocolate (==3.0) ; sys_platform == "linux"','chocolate (>=2.0,<2.1) ; sys_platform == "darwin"','chocolate (>=1.0,<2.0) ; sys_platform == "win32"']
-networking = ['requests (>=2.0,<3.0) ; python_version >= "3.6" and python_version < "4.0"', 'httpx (>=0.23,<0.24) ; python_version >= "3.6" and python_version < "4.0"']
+birthday-present = [
+    'chocolate==3.0 ; sys_platform == "linux"',
+    'chocolate>=2.0,<2.1 ; sys_platform == "darwin"',
+    'chocolate>=1.0,<2.0 ; sys_platform == "win32"',
+]
+networking = [
+    'requests>=2.0,<3.0 ; python_version >= "3.6" and python_version < "4.0"',
+    'httpx>=0.23,<0.24 ; python_version >= "3.6" and python_version < "4.0"',
+]

@@ -1,5 +1,4 @@
 [tool.poetry]
-version = "1.2.3"
 classifiers = [
     "Development Status :: 4 - Beta",
 ]
@@ -11,7 +10,7 @@ priority = "supplemental"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-private-package = {  source = "private" }
+private-package = {source = "private"}
 
 [build-system]
 requires = ["poetry-core"]
@@ -22,12 +21,24 @@ name = "simple-project"
 description = "Test project for poetry-plugin-migrate"
 license = "MIT"
 keywords = ["we", "just", "need", "some", "keywords"]
-dynamic = ["version", "classifiers"]
+version = "1.2.3"
+dynamic = [
+    "classifiers",
+]
 readme = "README.md"
-authors = [{name = "Test Guy", email = "test.guy@example.com"}, {name = "Dev Guy", email = "dev.guy@example.com"}]
-maintainers = [{name = "Maintainer One", email = "maintainer.one@example.com"}]
+authors = [
+    {name = "Dev Guy", email = "dev.guy@example.com"},
+    {name = "Test Guy", email = "test.guy@example.com"},
+]
+maintainers = [
+    {name = "Maintainer One", email = "maintainer.one@example.com"},
+]
 requires-python = '>=3.9,<4.0'
-dependencies = ['private-package (>=1.0,<2.0)', 'requests (>=2.0,<3.0)', 'httpx (>=0.23,<0.24) ; python_version >= "3.9" and python_version < "4.0"']
+dependencies = [
+    'private-package>=1.0,<2.0',
+    'requests>=2.0,<3.0',
+    'httpx>=0.23,<0.24 ; python_version >= "3.9" and python_version < "4.0"',
+]
 
 [project.urls]
 homepage = "https://example.com/"
