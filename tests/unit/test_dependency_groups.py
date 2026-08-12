@@ -106,6 +106,29 @@ internal = { version = "^1.0", source = "private" }
     )
 
 
+def test_relative_path_dependency_keeps_whole_group() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.group.local.dependencies]
+dummy-local = { path = "../dummy-local", develop = true }
+"""
+    )
+
+    assert "dependency-groups" not in result
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    groups = require_table(tool_poetry["group"], "tool.poetry.group")
+    local_group = require_table(groups["local"], "tool.poetry.group.local")
+    dependencies = require_table(
+        local_group["dependencies"], "tool.poetry.group.local.dependencies"
+    )
+    assert dependencies["dummy-local"] == {
+        "path": "../dummy-local",
+        "develop": True,
+    }
+    assert any("relative path" in warning for warning in migrator.warnings)
+
+
 def test_existing_target_group_preserves_legacy_group() -> None:
     result, migrator = migrate(
         """\

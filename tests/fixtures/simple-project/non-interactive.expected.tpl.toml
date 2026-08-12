@@ -10,7 +10,9 @@ priority = "supplemental"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-private-package = {source = "private"}
+private-package = { version = "^1.0", source = "private" }
+requests = "^2.0"
+httpx = { version = "^0.23", python = "^3.9" }
 
 [build-system]
 requires = ["poetry-core"]
@@ -24,6 +26,7 @@ keywords = ["we", "just", "need", "some", "keywords"]
 version = "1.2.3"
 dynamic = [
     "classifiers",
+    "dependencies",
 ]
 readme = "README.md"
 authors = [
@@ -34,11 +37,6 @@ maintainers = [
     {name = "Maintainer One", email = "maintainer.one@example.com"},
 ]
 requires-python = '>=3.9,<4.0'
-dependencies = [
-    'private-package>=1.0,<2.0',
-    'requests>=2.0,<3.0',
-    'httpx>=0.23,<0.24 ; python_version >= "3.9" and python_version < "4.0"',
-]
 
 [project.urls]
 homepage = "https://example.com/"
