@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -33,20 +34,21 @@ def from_template(template: str) -> str:
 
 
 @pytest.fixture
-def project(request: pytest.FixtureRequest):
+def project(request: pytest.FixtureRequest, tmp_path: Path):
     project_name: str = request.param
-    project_path = FIXTURES_DIR / project_name
+    fixture_path = FIXTURES_DIR / project_name
+    project_path = tmp_path / project_name
+    shutil.copytree(fixture_path, project_path)
+    local_package = FIXTURES_DIR / "local_package"
+    if local_package.exists():
+        shutil.copytree(local_package, tmp_path / "local_package", dirs_exist_ok=True)
 
     pyproject_path = project_path / PYPROJECT_TOML
     pyproject_template_path = pyproject_path.with_suffix(PYPROJECT_TEMPLATE_SUFFIX)
 
-    if not pyproject_path.exists():
-        pyproject_path.write_text(from_template(pyproject_template_path.read_text()))
+    pyproject_path.write_text(from_template(pyproject_template_path.read_text()))
 
-    yield project_path
-
-    if pyproject_template_path.exists():
-        pyproject_path.unlink()
+    return project_path
 
 
 @pytest.fixture
@@ -63,15 +65,11 @@ def expected_file(request: pytest.FixtureRequest, project: Path):
         expected_file_name + EXPECTED_TEMPLATE_SUFFIX
     )
 
-    if not expected_pyproject_path.exists():
-        expected_pyproject_path.write_text(
-            from_template(expected_pyproject_template_path.read_text())
-        )
+    expected_pyproject_path.write_text(
+        from_template(expected_pyproject_template_path.read_text())
+    )
 
-    yield expected_pyproject_path
-
-    if expected_pyproject_template_path.exists():
-        expected_pyproject_path.unlink()
+    return expected_pyproject_path
 
 
 @pytest.fixture
