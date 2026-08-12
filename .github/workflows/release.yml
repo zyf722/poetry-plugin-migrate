@@ -24,6 +24,11 @@ on:
         type: boolean
         required: true
         default: false
+      resume-version:
+        description: "Resume publishing an existing version (for example, 0.2.0)"
+        type: string
+        required: false
+        default: ""
   pull_request:
     types: [closed]
     branches: [main]
@@ -38,7 +43,9 @@ concurrency:
 jobs:
   prepare:
     name: Prepare release pull request
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.resume-version == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -152,11 +159,16 @@ jobs:
   publish:
     name: Publish merged release
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.user.login == 'github-actions[bot]' &&
-      startsWith(github.event.pull_request.head.ref, 'release/v') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.user.login == 'github-actions[bot]' &&
+        startsWith(github.event.pull_request.head.ref, 'release/v') &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      ) || (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.resume-version != ''
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -168,10 +180,34 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Checkout merged release
+      - name: Resolve release source
+        id: source
+        shell: bash
+        env:
+          MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          RESUME_VERSION: ${{ inputs.resume-version }}
+        run: |
+          if [[ -n "$RESUME_VERSION" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+              echo "Releases must be resumed from main, not $GITHUB_REF_NAME." >&2
+              exit 1
+            fi
+            if [[ ! "$RESUME_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid release version: $RESUME_VERSION" >&2
+              exit 1
+            fi
+            echo "ref=refs/tags/$RESUME_VERSION" >> "$GITHUB_OUTPUT"
+            echo "version=$RESUME_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$MERGE_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "version=${RELEASE_BRANCH#release/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout release
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ steps.source.outputs.ref }}
           fetch-depth: 0
 
       - name: Install Poetry
@@ -194,21 +230,20 @@ jobs:
         id: version
         shell: bash
         env:
-          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          EXPECTED_VERSION: ${{ steps.source.outputs.version }}
         run: |
           version="$(poetry version --short)"
-          expected_version="$RELEASE_BRANCH"
-          expected_version="${expected_version#release/v}"
 
-          if [[ "$version" != "$expected_version" ]]; then
-            echo "Project version $version does not match release branch version $expected_version." >&2
+          if [[ "$version" != "$EXPECTED_VERSION" ]]; then
+            echo "Project version $version does not match expected version $EXPECTED_VERSION." >&2
             exit 1
           fi
 
           if git rev-parse --verify --quiet "refs/tags/$version"; then
             tag_commit="$(git rev-list -n 1 "$version")"
-            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
-              echo "Tag $version points to $tag_commit instead of $GITHUB_SHA." >&2
+            release_commit="$(git rev-parse HEAD)"
+            if [[ "$tag_commit" != "$release_commit" ]]; then
+              echo "Tag $version points to $tag_commit instead of release commit $release_commit." >&2
               exit 1
             fi
           fi
@@ -236,6 +271,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          git switch --force-create main HEAD
           poetry run semantic-release changelog --post-to-release-tag "$VERSION"
           gh release upload "$VERSION" dist/* --clobber
 
