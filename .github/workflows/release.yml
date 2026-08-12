@@ -4,30 +4,159 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 'Dry Run?'
+        description: "Preview the release without creating a pull request?"
         type: boolean
         required: true
         default: true
       bump-version:
-        description: 'Bump Level?'
+        description: "Bump level"
         type: choice
         options:
-          - 'auto'
-          - 'major'
-          - 'minor'
-          - 'patch'
-          - 'prerelease'
+          - "auto"
+          - "major"
+          - "minor"
+          - "patch"
+          - "prerelease"
         required: false
-        default: 'auto'
+        default: "auto"
       as-prerelease:
-        description: 'As pre-release?'
+        description: "Release as a pre-release?"
         type: boolean
         required: true
         default: false
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "CHANGELOG.md"
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && 'prepare' || github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Prepare release pull request
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Verify release branch
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "Releases must be prepared from main, not $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: poetry
+
+      - name: Set Poetry environment
+        run: poetry env use '${{ steps.python.outputs.python-path }}'
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run project checks
+        run: poetry run poe check
+
+      - name: Calculate and apply version
+        id: version
+        shell: bash
+        run: |
+          version_args=()
+          bump="${{ inputs.bump-version }}"
+
+          case "$bump" in
+            auto) ;;
+            major|minor|patch) version_args+=("--$bump") ;;
+            prerelease) version_args+=("--prerelease") ;;
+            *) echo "Unsupported bump level: $bump" >&2; exit 1 ;;
+          esac
+
+          if [[ "${{ inputs.as-prerelease }}" == "true" ]]; then
+            version_args+=("--as-prerelease")
+          fi
+
+          next_version="$(poetry run semantic-release version --print "${version_args[@]}")"
+          if [[ -z "$next_version" ]]; then
+            echo "No releasable changes were found." >&2
+            exit 1
+          fi
+
+          echo "version=$next_version" >> "$GITHUB_OUTPUT"
+          poetry run semantic-release version \
+            --no-commit \
+            --no-tag \
+            --no-push \
+            --no-vcs-release \
+            --skip-build \
+            "${version_args[@]}"
+
+      - name: Build and validate distributions
+        run: |
+          poetry build
+          poetry publish --dry-run
+
+      - name: Show dry-run result
+        if: ${{ inputs.dry-run }}
+        run: |
+          git diff --check
+          git diff -- pyproject.toml CHANGELOG.md
+
+      - name: Create release pull request
+        if: ${{ !inputs.dry-run }}
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          if gh pr list --state open --base main --head "$branch" --json number --jq 'length' | grep -qx 0; then
+            git switch -c "$branch"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml CHANGELOG.md
+            git commit -m "chore(release): v$VERSION"
+            git push --set-upstream origin "$branch"
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore(release): v$VERSION" \
+              --body "Automated release preparation for v$VERSION."
+            gh workflow run build.yml --ref "$branch"
+          else
+            echo "An open release pull request already exists for v$VERSION." >&2
+            exit 1
+          fi
+
   publish:
-    name: Publish and Release (${{ github.event.inputs.dry-run == 'true' && 'Dry Run' || 'Prod' }})
+    name: Publish merged release
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'release/v') &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,80 +168,78 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout merged release
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
 
       - name: Install Poetry
-        run: |
-          pipx install poetry
+        run: pipx install poetry
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.x
+          python-version: "3.x"
           cache: poetry
 
       - name: Set Poetry environment
-        run: |
-          poetry env use python
+        run: poetry env use '${{ steps.python.outputs.python-path }}'
 
       - name: Install dependencies
         run: poetry install
 
-      - name: Verify release branch
+      - name: Verify release version
+        id: version
         shell: bash
+        env:
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
-          if [[ "$GITHUB_REF_NAME" != "main" ]]; then
-            echo "Releases must run from main, not $GITHUB_REF_NAME." >&2
+          version="$(poetry version --short)"
+          expected_version="$RELEASE_BRANCH"
+          expected_version="${expected_version#release/v}"
+
+          if [[ "$version" != "$expected_version" ]]; then
+            echo "Project version $version does not match release branch version $expected_version." >&2
             exit 1
           fi
+
+          if git rev-parse --verify --quiet "refs/tags/$version"; then
+            tag_commit="$(git rev-list -n 1 "$version")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "Tag $version points to $tag_commit instead of $GITHUB_SHA." >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Run project checks
         run: poetry run poe check
 
-      - name: Semantic Release - Versioning
-        shell: bash
-        run: |
-          global_args=()
-          version_args=()
-          bump="${{ github.event.inputs.bump-version }}"
-
-          case "$bump" in
-            auto) ;;
-            major|minor|patch) version_args+=("--$bump") ;;
-            prerelease) version_args+=("--prerelease") ;;
-            *) echo "Unsupported bump level: $bump" >&2; exit 1 ;;
-          esac
-
-          if [[ "${{ github.event.inputs.as-prerelease }}" == "true" ]]; then
-            version_args+=("--as-prerelease")
-          fi
-
-          if [[ "${{ github.event.inputs.dry-run }}" == "true" ]]; then
-            global_args+=("-vv" "--noop")
-          fi
-
-          poetry run semantic-release "${global_args[@]}" version "${version_args[@]}"
-
       - name: Build distributions
         run: poetry build
 
-      - name: Validate a dry-run publication
-        if: ${{ github.event.inputs.dry-run == 'true' }}
-        run: poetry publish --dry-run
-
-      - name: Publish to PyPI with Trusted Publishing
-        if: ${{ github.event.inputs.dry-run != 'true' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-
-      - name: Semantic Release - Assets
+      - name: Create tag
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          global_args=()
-          if [[ "${{ github.event.inputs.dry-run }}" == "true" ]]; then
-            global_args+=("-vv" "--noop")
+          if ! git rev-parse --verify --quiet "refs/tags/$VERSION"; then
+            git tag "$VERSION"
+            git push origin "$VERSION"
           fi
 
-          poetry run semantic-release "${global_args[@]}" publish
+      - name: Create GitHub release and upload distributions
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          poetry run semantic-release changelog --post-to-release-tag "$VERSION"
+          gh release upload "$VERSION" dist/* --clobber
+
+      - name: Publish to PyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
