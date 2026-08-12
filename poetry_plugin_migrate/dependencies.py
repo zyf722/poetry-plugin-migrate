@@ -68,12 +68,12 @@ class DependencyMigrator:
         self._migrate_main_dependencies()
         self._rebuild_multi_constraints()
 
-    def _unsafe_main_dependencies(self) -> list[str]:
+    def _unsafe_main_dependencies(self) -> dict[str, set[str]]:
         """Return dependencies that cannot be represented safely in PEP 508."""
         from poetry.core.factory import Factory
         from poetry.core.packages.path_dependency import PathDependency
 
-        unsafe: list[str] = []
+        unsafe: dict[str, set[str]] = {}
         for package_name, raw_constraint in self.deps.items():
             if package_name == "python":
                 continue
@@ -91,29 +91,37 @@ class DependencyMigrator:
                     isinstance(dependency, PathDependency)
                     and not dependency.path.is_absolute()
                 ):
-                    unsafe.append(str(package_name))
-                    break
+                    unsafe.setdefault(str(package_name), set()).add("relative path")
+
+                remaining = self._without_pep508_fields(
+                    constraint, extra_fields=["optional"]
+                )
+                if is_table(remaining):
+                    fields = {str(field) for field in remaining}
+                    if fields:
+                        unsafe.setdefault(str(package_name), set()).update(fields)
         return unsafe
 
-    def _keep_unsafe_dependencies(self, unsafe_dependencies: list[str]) -> None:
+    def _keep_unsafe_dependencies(
+        self, unsafe_dependencies: dict[str, set[str]]
+    ) -> None:
         """Keep the complete Poetry dependency model when migration is lossy."""
-        dependency_list = ", ".join(sorted(set(unsafe_dependencies)))
+        dependency_list = "; ".join(
+            f"{name} ({', '.join(sorted(reasons))})"
+            for name, reasons in sorted(unsafe_dependencies.items())
+        )
         if "dependencies" in self.project:
             raise ValueError(
-                "Cannot safely migrate Poetry dependencies because relative path "
-                f"dependencies ({dependency_list}) coexist with "
+                "Cannot safely migrate Poetry dependencies because dependencies "
+                f"with Poetry-only semantics ({dependency_list}) coexist with "
                 "[project.dependencies]. Remove the conflict or migrate these "
                 "dependencies manually."
             )
 
-        reason = (
-            "Relative path dependencies cannot be represented portably in "
-            "PEP 508 project metadata."
-        )
         self.migrator.warnings.append(
-            f"Dependencies {dependency_list} require Poetry-specific relative "
-            f"paths. {reason} All dependencies and extras were kept in "
-            "[tool.poetry] to preserve dependency semantics."
+            f"Dependencies {dependency_list} use semantics that cannot be represented "
+            "completely in PEP 508 project metadata. All dependencies and extras "
+            "were kept in [tool.poetry] to preserve dependency semantics."
         )
         self.migrator._add_dynamic(self.project, "dependencies")
 

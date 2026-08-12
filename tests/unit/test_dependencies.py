@@ -223,6 +223,55 @@ dummy-local = { path = "../dummy-local" }
         migrate(source)
 
 
+def test_poetry_only_dependency_fields_keep_complete_effective_model(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "dummy-private-app"
+    project.mkdir()
+    source = """\
+[tool.poetry]
+name = "dummy-private-app"
+version = "1.0.0"
+description = "Synthetic private source preservation"
+authors = []
+
+[[tool.poetry.source]]
+name = "dummy-private"
+url = "https://example.invalid/simple"
+priority = "explicit"
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-private = { version = "^1.0", source = "dummy-private", allow-prereleases = true }
+"""
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(source)
+
+    before_dependency = Factory().create_poetry(project).package.requires[0]
+    result, migrator = migrate(source)
+    pyproject.write_text(result.as_string())
+    after_dependency = Factory().create_poetry(project).package.requires[0]
+
+    assert after_dependency.to_pep_508() == before_dependency.to_pep_508()
+    assert after_dependency.source_name == before_dependency.source_name
+    assert (
+        after_dependency.allows_prereleases() is before_dependency.allows_prereleases()
+    )
+    migrated_project = require_table(result["project"], "project")
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    dependencies = require_table(
+        tool_poetry["dependencies"], "tool.poetry.dependencies"
+    )
+    assert migrated_project["dynamic"] == ["dependencies"]
+    assert dependencies["dummy-private"] == {
+        "version": "^1.0",
+        "source": "dummy-private",
+        "allow-prereleases": True,
+    }
+    assert any("allow-prereleases" in warning for warning in migrator.warnings)
+
+
 def test_dependency_comments_survive_all_standardized_destinations() -> None:
     result, _ = migrate(
         """\
