@@ -70,12 +70,13 @@ lint-check = "ruff check ."
 format-check = "ruff format --check ."
 type-check = "mypy ."
 test = "pytest -q -p no:cacheprovider"
-check.sequence = [
+static-check.sequence = [
     "lint-check",
     "format-check",
-    "type-check",
-    "test"
+    "type-check"
 ]
+static-check.ignore_fail = "return_non_zero"
+check.sequence = ["static-check", "test"]
 check.ignore_fail = "return_non_zero"
 
 [tool.coverage.run]
