@@ -6,8 +6,8 @@ license = "MIT"
 authors = [{ name = "zyf722", email = "MaxMixAlex@protonmail.com" }]
 keywords = ["poetry", "migrate", "PEP-621", "pyproject.toml"]
 readme = "README.md"
-requires-python = ">=3.9,<4.0"
-dependencies = ["poetry (>=2.0.0,<3.0.0)"]
+requires-python = ">=3.10,<4.0"
+dependencies = ["poetry (>=2.2.1,<3.0.0)"]
 dynamic = ["classifiers"]
 
 [project.urls]
@@ -21,30 +21,62 @@ poetry-plugin-migrate = "poetry_plugin_migrate.plugin:MigrateApplicationPlugin"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-requires-poetry = ">=2.0"
+requires-poetry = ">=2.2.1"
 
-[tool.poetry.group.test.dependencies]
-pytest = "^8.3.4"
-pytest-mock = "^3.14.0"
-pytest-cov = "^6.0.0"
-
-[tool.poetry.group.dev.dependencies]
-mypy = "^1.14.1"
-ruff = "^0.9.3"
-python-semantic-release = "^9.17.0"
+[dependency-groups]
+dev = [
+    "ruff (>=0.15.7,<0.16.0)",
+    "mypy (>=1.19.0,<2.0.0)",
+    "poethepoet (>=0.42.1,<0.43.0)",
+    "python-semantic-release (>=9.17.0,<10.0.0)"
+]
+test = [
+    "pytest (>=8.3.4,<9.0.0)",
+    "pytest-mock (>=3.14.0,<4.0.0)",
+    "pytest-cov (>=6.0.0,<7.0.0)"
+]
 
 [tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
 check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
 
 [tool.ruff]
-output-format = "github"
+output-format = "grouped"
 
 [tool.ruff.lint]
-select = ["I"]
-ignore = ["E501"]
+extend-select = [
+    "I",
+    "UP",
+    "A",
+    "N",
+    "SIM",
+    "RET",
+    "PTH",
+    "C4",
+    "B",
+    "RUF",
+    "FAST",
+]
+ignore = ["B008", "E501", "UP045", "UP046", "SIM117", "RET504", "RUF001", "RUF002", "RUF003", "A002"]
+
+[tool.poe.tasks]
+lint-check = "ruff check ."
+format-check = "ruff format --check ."
+type-check = "mypy ."
+test = "pytest -q -p no:cacheprovider"
+check.sequence = [
+    "lint-check",
+    "format-check",
+    "type-check",
+    "test"
+]
+check.ignore_fail = "return_non_zero"
 
 [tool.coverage.run]
 branch = true
