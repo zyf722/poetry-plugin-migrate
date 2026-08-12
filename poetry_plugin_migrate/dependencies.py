@@ -14,6 +14,10 @@ from poetry_plugin_migrate.migrator import (
     SkipField,
     UpdateField,
 )
+from poetry_plugin_migrate.requirements import (
+    UnrepresentableRequirementError,
+    render_pep508_requirement,
+)
 from poetry_plugin_migrate.toml import (
     TomlTable,
     is_table,
@@ -47,18 +51,9 @@ class DependencyMigrator:
         )
 
     def run(self) -> None:
-        unsafe_dependencies = self._unsafe_main_dependencies()
-        self.strip_brackets = self.migrator._prompt(
-            "Remove brackets from PEP 508 version specifiers?",
-            default=True,
-            additional_info=(
-                "Per PEP 508, brackets around version specifiers "
-                "(e.g. <comment>package (>=1.0,<2.0)</comment>) "
-                "should not be generated, but Poetry includes them by default. "
-                "Choose whether to remove them in the migrated output."
-            ),
-        )
+        self.keep_version_brackets = self.migrator._keep_pep508_version_brackets()
         self._migrate_requires_python()
+        unsafe_dependencies = self._unsafe_main_dependencies()
         if unsafe_dependencies:
             self._keep_unsafe_dependencies(unsafe_dependencies)
             return
@@ -87,6 +82,15 @@ class DependencyMigrator:
                     str(package_name),
                     deepcopy(self._dependency_spec(constraint)),
                 )
+                try:
+                    render_pep508_requirement(
+                        dependency,
+                        keep_version_brackets=self.keep_version_brackets,
+                    )
+                except UnrepresentableRequirementError:
+                    unsafe.setdefault(str(package_name), set()).add(
+                        "PEP 508 round-trip failed"
+                    )
                 if (
                     isinstance(dependency, PathDependency)
                     and not dependency.path.is_absolute()
@@ -227,9 +231,7 @@ class DependencyMigrator:
                 dependency = Factory.create_dependency(
                     package_name, self._dependency_spec(constraint)
                 )
-                extra_cluster[i] = self._pep508_string(
-                    dependency.to_pep_508(), constraint
-                )
+                extra_cluster[i] = self._pep508_string(dependency, constraint)
                 self._preserve_comment_on_array(extra_cluster, constraint)
 
                 remaining_constraint = self._without_pep508_fields(constraint)
@@ -251,7 +253,7 @@ class DependencyMigrator:
                             self._pep508_string(
                                 Factory.create_dependency(
                                     package_name, self._dependency_spec(constraint)
-                                ).to_pep_508(),
+                                ),
                                 constraint,
                             )
                         )
@@ -370,9 +372,9 @@ class DependencyMigrator:
         if isinstance(constraint, str) or (
             is_table(remaining_constraint) and len(remaining_constraint) == 0
         ):
-            return self._pep508_string(dependency.to_pep_508(), original_constraint)
+            return self._pep508_string(dependency, original_constraint)
         raise CopyModifiedField(
-            self._pep508_string(dependency.to_pep_508(), original_constraint),
+            self._pep508_string(dependency, original_constraint),
             remaining_constraint,
         )
 
@@ -450,22 +452,16 @@ class DependencyMigrator:
                 result[field] = deepcopy(value)
         return result
 
-    def _strip_pep508_brackets(self, pep508: str) -> str:
-        """Remove version brackets from a PEP 508 string if user opted in.
-
-        Per PEP 508, brackets around version specifiers should not be generated.
-        Converts ``package (>=1.0,<2.0)`` to ``package>=1.0,<2.0``.
-        """
-        if not self.strip_brackets:
-            return pep508
-        return re.sub(r" \(([><=!~^][^)]*)\)", r"\1", pep508)
-
-    def _pep508_string(self, pep508: str, source: object) -> String:
+    def _pep508_string(self, dependency: Dependency, source: object) -> String:
         """Create a PEP 508 string while retaining source-item trivia."""
         from tomlkit import string
 
         result = string(
-            self._strip_pep508_brackets(pep508), literal=self.migrator.literal
+            render_pep508_requirement(
+                dependency,
+                keep_version_brackets=self.keep_version_brackets,
+            ),
+            literal=self.migrator.literal,
         )
         source_item = require_item(source, "dependency constraint")
         result.trivia.indent = deepcopy(source_item.trivia.indent)
@@ -707,7 +703,16 @@ class DependencyGroupMigrator:
                     )
                     return None
 
-                pep508 = re.sub(r" \(([><=!~^][^)]*)\)", r"\1", dependency.to_pep_508())
+                try:
+                    pep508 = render_pep508_requirement(
+                        dependency,
+                        keep_version_brackets=self.migrator._keep_pep508_version_brackets(),
+                    )
+                except UnrepresentableRequirementError:
+                    self.migrator.warnings.append(
+                        f"[{container_name}.{dependency_name}] cannot be represented safely in PEP 508; group kept."
+                    )
+                    return None
                 converted = string(pep508, literal=self.migrator.literal)
                 source_item = require_item(raw_item, "dependency constraint")
                 comment = source_item.trivia.comment

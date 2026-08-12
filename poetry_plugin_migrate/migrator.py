@@ -143,6 +143,23 @@ class Migrator:
         self.skip = skip
         self.command = command
         self.literal = literal
+        self._keep_version_brackets: bool | None = None
+
+    def _keep_pep508_version_brackets(self) -> bool:
+        """Return the cached output-style choice for generated requirements."""
+        if self._keep_version_brackets is None:
+            remove_brackets = self._prompt(
+                "Remove brackets from PEP 508 version specifiers?",
+                default=True,
+                additional_info=(
+                    "Per PEP 508, brackets around version specifiers "
+                    "(e.g. <comment>package (>=1.0,<2.0)</comment>) "
+                    "should not be generated, but Poetry includes them by default. "
+                    "Choose whether to remove them in the migrated output."
+                ),
+            )
+            self._keep_version_brackets = not remove_brackets
+        return self._keep_version_brackets
 
     def _move(
         self,
@@ -832,7 +849,20 @@ class Migrator:
                     )
                     if target_constraint:
                         dependency.constraint = target_constraint
-                        requires[i] = string(
-                            dependency.to_pep_508(), literal=self.literal
+                        from poetry_plugin_migrate.requirements import (
+                            UnrepresentableRequirementError,
+                            render_pep508_requirement,
                         )
+
+                        try:
+                            rendered = render_pep508_requirement(
+                                dependency,
+                                keep_version_brackets=self._keep_pep508_version_brackets(),
+                            )
+                        except UnrepresentableRequirementError:
+                            self.warnings.append(
+                                "Not updating [build-system.requires] poetry-core because the generated requirement did not round-trip safely."
+                            )
+                        else:
+                            requires[i] = string(rendered, literal=self.literal)
                     break
