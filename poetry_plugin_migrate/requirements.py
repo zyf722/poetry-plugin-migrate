@@ -60,9 +60,25 @@ def render_pep508_requirement(
 
 def _same_pep508_semantics(source: Dependency, target: Dependency) -> bool:
     """Compare every dependency field representable in a PEP 508 string."""
+    from urllib.parse import urlsplit
+
+    # A direct reference identifies an exact artifact or VCS revision.  When
+    # parsing a wheel URL, Poetry may additionally infer a version from the
+    # filename even though the original dependency has an unconstrained
+    # version.  That inferred constraint is not separate PEP 508 semantics;
+    # the source fields below are the lossless identity check for direct refs.
+    inferred_wheel_constraint = (
+        source.source_type == "url"
+        and source.source_url is not None
+        and urlsplit(source.source_url).path.lower().endswith(".whl")
+        and source.constraint.is_any()
+    )
+    same_constraint = (
+        source.constraint == target.constraint or inferred_wheel_constraint
+    )
     return (
         source.name == target.name
-        and source.constraint == target.constraint
+        and same_constraint
         and source.extras == target.extras
         and source.marker == target.marker
         and source.source_type == target.source_type
