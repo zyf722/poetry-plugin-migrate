@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from typing import ClassVar, Protocol
 
@@ -10,9 +11,13 @@ from tomlkit.items import Array, Item, Table
 
 from poetry_plugin_migrate.toml import (
     TomlTable,
+    comment_counts,
     is_table,
+    make_string,
     require_array,
+    require_item,
     require_table,
+    restore_missing_comments,
 )
 
 
@@ -72,44 +77,24 @@ class UpdateField(Exception):  # noqa: N818
 
 
 class Migrator:
-    """
-    Class to migrate pyproject.toml from Poetry v1 to v2 (PEP-621 compliant).
+    """Migrate Poetry metadata to standard project and dependency tables.
 
-    Items marked with *prompt* will be handled with a prompt,
-    and will be skipped if `skip` is set.
+    Scalar metadata, people, URLs, entry points and non-file scripts are moved
+    only when doing so does not override an authoritative standard container.
+    Version, classifiers, Python constraints, dependency placement, supported
+    Poetry versions, build requirements and canonical layout can be selected
+    interactively; ``skip`` uses their documented defaults.
 
-    What will be moved from `[tool.poetry]` to `[project]`:
-    - Same-named fields
-        - `name`, `description`, `license`, `keywords`, `urls`
-        - `version` (*prompt*, if user do not need dynamic versioning)
-        - `readme` (if only one readme is set)
-        - `classifiers` (*prompt*, if user do not need classifier enrichment)
-    - `homepage` => `[project.urls.homepage]`
-    - `repository` => `[project.urls.repository]`
-    - `documentation` => `[project.urls.documentation]`
-    - `plugins` => `[project.entry-points]`
-    - `scripts` (only for those are not of type `file`, e.g. `{ reference = "some_binary.exe", type = "file" }`)
+    Main dependencies and extras are rendered from Poetry dependency objects
+    and validated as PEP 508. Multiple constraints are supported directly. If
+    any dependency needs Poetry-only state or cannot round-trip safely, the
+    complete main dependency model remains under ``[tool.poetry]`` and standard
+    dependencies are marked dynamic. Dependency groups use the same safety rule
+    independently per group.
 
-    What needs value transformation after moving from `[tool.poetry]` to `[project]`:
-    - `authors`, `maintainers`
-        - From `"name <email>"` to `{"name": name, "email": email}`
-    - Dependencies
-        - `dependencies`
-        - `extras` => `[project.optional-dependencies]`
-            - If value is a dict with only `version` and `optional = true`
-        - `dependencies.python` => `[project.requires-python]` (*prompt*, if user tends to put it here)
-
-    What will be kept in `[tool.poetry]` and added in `[project.dynamic]`:
-    - `version` (*prompt*, if user needs dynamic versioning)
-    - `readme` (if multiple readmes are set)
-    - `classifiers` (*prompt*, if user needs classifier enrichment)
-    - `dependencies` (*prompt*, if user tends to completely keep it)
-    - `dependencies` (only for those have Poetry-specific features, e.g. `source`, `allow-prereleases`, arrays)
-    - `dependencies.python`, with `requires-python` added as `dynamic` (*prompt*, if user tends to keep it)
-
-    Other changes:
-    - Add or update `[tool.poetry.requires-poetry]` with a Poetry 2.2.1 constraint (*prompt*)
-    - Update `[build-system.requires]` to `poetry-core>=2.0.0,<3.0.0` if `poetry-core` is set (*prompt*)
+    A non-package project with enough name/version metadata can still migrate
+    to a valid ``[project]`` table. Without that metadata, PEP 621 migration is
+    skipped while independent dependency-group and tool updates remain enabled.
     """
 
     command: MigrationCommand
@@ -345,6 +330,36 @@ class Migrator:
                         continue
                 items_to_move.append(transformed_value)
 
+            # A complete one-to-one transform has an unambiguous comment
+            # mapping. Preserve the parsed array groups rather than appending
+            # values through tomlkit's public list API, which discards
+            # standalone comments. If values are skipped or deduplicated, the
+            # final comment audit retains otherwise orphaned text instead.
+            unique_items: list[object] = []
+            can_preserve_groups = len(items_to_keep) == 0
+            for item in items_to_move:
+                if item in to_container or item in unique_items:
+                    can_preserve_groups = False
+                    break
+                unique_items.append(item)
+            if can_preserve_groups and all(
+                isinstance(item, Item) for item in items_to_move
+            ):
+                from poetry_plugin_migrate.toml import (
+                    extend_array_preserving_comments,
+                )
+
+                extend_array_preserving_comments(
+                    to_container,
+                    from_sub_container,
+                    [
+                        require_item(item, "transformed array value")
+                        for item in items_to_move
+                    ],
+                )
+                del from_container[sub_container_name]
+                return
+
             for item in items_to_move:
                 if item not in to_container:
                     to_container.append(item)
@@ -428,19 +443,48 @@ class Migrator:
         from copy import deepcopy
 
         new_document: TOMLDocument = deepcopy(pyproject_document)
+        original_comments = comment_counts(new_document)
+
+        original_tool_poetry = self._get_tool_poetry(new_document)
+        if original_tool_poetry is None:
+            return new_document
+
+        migrate_project = not (
+            original_tool_poetry.get("package-mode") is False
+            and "project" not in new_document
+            and not (
+                "name" in original_tool_poetry and "version" in original_tool_poetry
+            )
+        )
 
         # tomlkit represents tables whose declarations are separated by other
         # top-level tables with an OutOfOrderTableProxy. Deleting keys through
         # that proxy can invalidate its table indexes after one backing table
         # becomes empty. Consolidate only [tool.poetry] before any mutation so
         # all later operations use an ordinary Table.
-        self._consolidate_tool_poetry(new_document)
+        if self._will_mutate_tool_poetry(original_tool_poetry, migrate_project):
+            self._consolidate_tool_poetry(new_document)
 
         tool_poetry = self._get_tool_poetry(new_document)
         if tool_poetry is None:
             return new_document
 
+        if not migrate_project:
+            self.warnings.append(
+                "[tool.poetry.package-mode] is false and no complete package "
+                "metadata is available. PEP 621 [project] migration was skipped; "
+                "independent dependency-group and tool metadata migration continues."
+            )
+            if "group" in tool_poetry or "dev-dependencies" in tool_poetry:
+                from poetry_plugin_migrate.dependencies import DependencyGroupMigrator
+
+                DependencyGroupMigrator(self, new_document, tool_poetry).run()
+            self._migrate_requires_poetry(tool_poetry)
+            self._migrate_build_system(new_document)
+            return self._finalize_document(new_document, original_comments)
+
         project = self._ensure_project_table(new_document)
+        original_dynamic_overlaps = self._static_dynamic_overlaps(project)
 
         # Phase 1: Direct field moves
         self._migrate_direct_fields(tool_poetry, project)
@@ -475,9 +519,92 @@ class Migrator:
         # Clean up empty dependencies array
         project_dependencies = project.get("dependencies")
         if isinstance(project_dependencies, Array) and len(project_dependencies) == 0:
-            del project["dependencies"]
+            legacy_dependencies = tool_poetry.get("dependencies")
+            if not is_table(legacy_dependencies) or len(legacy_dependencies) == 0:
+                del project["dependencies"]
+
+        self._remove_static_dynamic_overlaps(project, original_dynamic_overlaps)
+
+        return self._finalize_document(new_document, original_comments)
+
+    def _finalize_document(
+        self, new_document: TOMLDocument, original_comments: Counter[str]
+    ) -> TOMLDocument:
+        """Apply the optional layout and restore otherwise lost comments."""
+
+        # This is intentionally the final migration decision. Neither TOML nor
+        # the packaging specifications define a preferred table order, so the
+        # canonical layout is opt-in and never used by non-interactive mode.
+        if self._prompt(
+            "Reorder standardized top-level tables into the canonical layout?",
+            default=False,
+            additional_info=(
+                "No PEP defines a semantic or recommended table order. "
+                "The optional layout is <b>[project]</b>, "
+                "<b>[dependency-groups]</b>, <b>[tool]</b>, other top-level "
+                "tables, then <b>[build-system]</b>. Within <b>[tool]</b>, "
+                "Poetry tables precede other tools. Relative order inside the "
+                "Poetry and non-Poetry groups is retained. Table contents and "
+                "dependency arrays are not sorted. tomlkit preserves comments "
+                "and blank lines but does not infer comment meaning; a comment "
+                "between table headers normally stays with the preceding parsed "
+                "table even when a blank line precedes it. Review the resulting diff."
+            ),
+        ):
+            from poetry_plugin_migrate.toml import reorder_standard_tables
+
+            new_document = reorder_standard_tables(new_document)
+
+        restored_comments = restore_missing_comments(new_document, original_comments)
+        if restored_comments:
+            self.warnings.append(
+                f"Restored {len(restored_comments)} comment(s) at the end of the "
+                "document because their source TOML items were removed. Review "
+                "their placement in the diff."
+            )
 
         return new_document
+
+    def _will_mutate_tool_poetry(
+        self, tool_poetry: TomlTable, migrate_project: bool
+    ) -> bool:
+        """Return whether migration needs to edit the split Poetry table.
+
+        Consolidation necessarily joins physically separated declarations. Do
+        it only before a real edit so an already-modern project is not
+        reformatted merely because the command inspected it.
+        """
+        project_fields = {
+            "name",
+            "description",
+            "license",
+            "keywords",
+            "homepage",
+            "repository",
+            "documentation",
+            "urls",
+            "plugins",
+            "scripts",
+            "version",
+            "classifiers",
+            "readme",
+            "authors",
+            "maintainers",
+            "dependencies",
+        }
+        if migrate_project and any(field in tool_poetry for field in project_fields):
+            return True
+        if "dev-dependencies" in tool_poetry:
+            return True
+
+        groups = tool_poetry.get("group")
+        if is_table(groups):
+            for group in groups.values():
+                if is_table(group) and (
+                    "dependencies" in group or "include-groups" in group
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _consolidate_tool_poetry(doc: TOMLDocument) -> None:
@@ -503,15 +630,12 @@ class Migrator:
         if len(backing_tables) < 2:
             return
 
-        combined_body = [
-            (key, item)
-            for backing_table in backing_tables
-            for key, item in backing_table.value.body
-        ]
-        target = backing_tables[-1]
-        target.clear()
-        for key, item in combined_body:
-            target.append(key, item)
+        # Keep the first physical declaration in place. Later Poetry child
+        # tables move beside it only when a real migration requires mutation.
+        target = backing_tables[0]
+        for backing_table in backing_tables[1:]:
+            for key, item in backing_table.value.body:
+                target.append(key, item)
 
         def remove_table(container: Container, table_to_remove: Table) -> bool:
             for index, (_key, item) in enumerate(list(container.body)):
@@ -527,7 +651,7 @@ class Migrator:
                     return True
             return False
 
-        for backing_table in backing_tables[:-1]:
+        for backing_table in backing_tables[1:]:
             if not remove_table(doc, backing_table):
                 raise RuntimeError("Could not consolidate split [tool.poetry] table")
 
@@ -560,20 +684,53 @@ class Migrator:
         return require_table(doc["project"], "project")
 
     def _add_dynamic(self, project: TomlTable, field: str) -> None:
-        """Add given field to [project.dynamic] and remove it from [project]."""
+        """Add a field to [project.dynamic] without overriding static metadata."""
         from tomlkit import array
 
         if field in project:
             self.warnings.append(
-                f"[project.{field}] already exists and will be removed during adding it to [project.dynamic]."
+                f"[project.{field}] already exists. Its static value was preserved "
+                f"and {field!r} was not added to [project.dynamic]."
             )
-            del project[field]
+            return
         if "dynamic" not in project:
             project["dynamic"] = array()
         dynamic = require_array(project["dynamic"], "project.dynamic")
         dynamic.multiline(True)
         if field not in dynamic:
             dynamic.append(field)
+
+    @staticmethod
+    def _static_dynamic_overlaps(project: TomlTable) -> set[str]:
+        dynamic_value = project.get("dynamic")
+        if not isinstance(dynamic_value, Array):
+            return set()
+
+        static_fields = {str(field) for field in project if field != "dynamic"}
+        return {str(field) for field in dynamic_value if field in static_fields}
+
+    def _remove_static_dynamic_overlaps(
+        self, project: TomlTable, original_overlaps: set[str]
+    ) -> None:
+        """Remove only static/dynamic conflicts introduced by migration."""
+        dynamic_value = project.get("dynamic")
+        if not isinstance(dynamic_value, Array):
+            return
+
+        current_overlaps = self._static_dynamic_overlaps(project)
+        overlaps = [
+            str(field)
+            for field in dynamic_value
+            if field in current_overlaps and field not in original_overlaps
+        ]
+        for field in overlaps:
+            dynamic_value.remove(field)
+            self.warnings.append(
+                f"Removed {field!r} from [project.dynamic] because "
+                f"[project.{field}] is defined statically."
+            )
+        if len(dynamic_value) == 0:
+            del project["dynamic"]
 
     # ------------------------------------------------------------------
     # Phase 1: Direct field moves
@@ -582,8 +739,8 @@ class Migrator:
     def _migrate_direct_fields(
         self, tool_poetry: TomlTable, project: TomlTable
     ) -> None:
-        """Migrate same-named fields: name, description, license, keywords."""
-        for field in ("name", "description", "license", "keywords"):
+        """Migrate same-named fields that need no value validation."""
+        for field in ("name", "description"):
             self._move(
                 field,
                 tool_poetry,
@@ -591,6 +748,88 @@ class Migrator:
                 from_container_key="tool.poetry",
                 to_container_key="project",
             )
+        self._migrate_license(tool_poetry, project)
+        self._move(
+            "keywords",
+            tool_poetry,
+            project,
+            from_container_key="tool.poetry",
+            to_container_key="project",
+        )
+
+    def _migrate_license(self, tool_poetry: TomlTable, project: TomlTable) -> None:
+        """Move only license values that are already valid SPDX expressions."""
+        if "license" not in tool_poetry:
+            return
+
+        dynamic = project.get("dynamic")
+        if isinstance(dynamic, Array) and "license" in dynamic:
+            return
+
+        from packaging.licenses import (
+            InvalidLicenseExpression,
+            canonicalize_license_expression,
+        )
+
+        license_value = tool_poetry["license"]
+        canonical_value: object = license_value
+        valid_expression = False
+        if isinstance(license_value, str):
+            try:
+                canonical_license = canonicalize_license_expression(license_value)
+            except InvalidLicenseExpression:
+                pass
+            else:
+                valid_expression = True
+                if canonical_license != license_value:
+                    canonical_value = make_string(
+                        canonical_license, literal=self.literal
+                    )
+                    if isinstance(license_value, Item):
+                        canonical_value.trivia.indent = license_value.trivia.indent
+                        canonical_value.trivia.comment_ws = (
+                            license_value.trivia.comment_ws
+                        )
+                        canonical_value.trivia.comment = license_value.trivia.comment
+                        canonical_value.trivia.trail = license_value.trivia.trail
+
+        # Respect an existing standardized value. The general move helper
+        # removes equivalent legacy input and preserves genuine conflicts.
+        if "license" in project:
+            self._move(
+                "license",
+                tool_poetry,
+                project,
+                from_container_key="tool.poetry",
+                to_container_key="project",
+                target_value=canonical_value,
+            )
+            return
+
+        if not isinstance(license_value, str):
+            self.warnings.append(
+                "[tool.poetry.license] is not a string and was kept for manual migration."
+            )
+            self._add_dynamic(project, "license")
+            return
+        if not valid_expression:
+            self.warnings.append(
+                f"[tool.poetry.license] value {license_value!r} is not a valid "
+                "SPDX expression. It was kept in [tool.poetry], and "
+                "'license' was added to [project.dynamic] because PEP 639 "
+                "does not allow inferring a License-Expression from legacy license text."
+            )
+            self._add_dynamic(project, "license")
+            return
+
+        self._move(
+            "license",
+            tool_poetry,
+            project,
+            from_container_key="tool.poetry",
+            to_container_key="project",
+            target_value=canonical_value,
+        )
 
     def _migrate_urls(self, tool_poetry: TomlTable, project: TomlTable) -> None:
         """Migrate homepage/repository/documentation and custom [tool.poetry.urls]."""
@@ -598,6 +837,12 @@ class Migrator:
 
         url_fields = ("homepage", "repository", "documentation")
         if any(field in tool_poetry for field in url_fields) or "urls" in tool_poetry:
+            if "urls" in project:
+                self.warnings.append(
+                    "[project.urls] already exists. All legacy Poetry URL fields "
+                    "were kept for review instead of changing effective project URLs."
+                )
+                return
             if "urls" not in project:
                 project["urls"] = table()
             urls = require_table(project["urls"], "project.urls")
@@ -622,6 +867,12 @@ class Migrator:
         from tomlkit import table
 
         if "plugins" in tool_poetry:
+            if "entry-points" in project:
+                self.warnings.append(
+                    "[project.entry-points] already exists. [tool.poetry.plugins] "
+                    "was kept for review instead of changing effective entry points."
+                )
+                return
             if "entry-points" not in project:
                 project["entry-points"] = table()
             entry_points = require_table(
@@ -640,6 +891,15 @@ class Migrator:
         from tomlkit import table
 
         if "scripts" in tool_poetry:
+            if "scripts" in project:
+                self.warnings.append(
+                    "[project.scripts] already exists. [tool.poetry.scripts] was "
+                    "kept for review instead of changing effective scripts."
+                )
+                return
+            tool_scripts = require_table(tool_poetry["scripts"], "tool.poetry.scripts")
+            if not any(isinstance(value, str) for value in tool_scripts.values()):
+                return
             if "scripts" not in project:
                 project["scripts"] = table()
             scripts = require_table(project["scripts"], "project.scripts")
@@ -697,6 +957,12 @@ class Migrator:
 
         if "classifiers" not in tool_poetry:
             return
+        if "classifiers" in project:
+            self.warnings.append(
+                "[project.classifiers] already exists. [tool.poetry.classifiers] "
+                "was kept for review instead of changing effective classifiers."
+            )
+            return
 
         if self._prompt(
             "Keep Poetry managing classifiers in <b>[tool.poetry]</b> with auto-enrichment?",
@@ -729,6 +995,12 @@ class Migrator:
         """Migrate readme: single file moves to [project], multiple stay dynamic."""
         if "readme" not in tool_poetry:
             return
+        if "readme" in project:
+            self.warnings.append(
+                "[project.readme] already exists. [tool.poetry.readme] was kept "
+                "for review instead of changing the effective readme."
+            )
+            return
 
         readme = tool_poetry["readme"]
         if isinstance(readme, str):
@@ -756,6 +1028,13 @@ class Migrator:
 
         for arr_name in ("authors", "maintainers"):
             if arr_name in tool_poetry:
+                if arr_name in project:
+                    self.warnings.append(
+                        f"[project.{arr_name}] already exists. "
+                        f"[tool.poetry.{arr_name}] was kept for review instead of "
+                        "changing effective project metadata."
+                    )
+                    continue
                 if arr_name not in project:
                     project[arr_name] = array()
                 people = require_array(project[arr_name], f"project.{arr_name}")
@@ -794,14 +1073,12 @@ class Migrator:
 
     def _migrate_requires_poetry(self, tool_poetry: TomlTable) -> None:
         """Add or update [tool.poetry.requires-poetry]."""
-        from tomlkit import string
-
         if "requires-poetry" not in tool_poetry:
             target_constraint = self._select_constraint(
                 "tool.poetry.requires-poetry", presets=self.POETRY_CONSTRAINT_PRESETS
             )
             if target_constraint:
-                tool_poetry["requires-poetry"] = string(
+                tool_poetry["requires-poetry"] = make_string(
                     str(target_constraint), literal=self.literal
                 )
         else:
@@ -816,7 +1093,7 @@ class Migrator:
             )
             if target_constraint:
                 if not constraint.intersect(target_constraint).is_empty():
-                    tool_poetry["requires-poetry"] = string(
+                    tool_poetry["requires-poetry"] = make_string(
                         str(target_constraint), literal=self.literal
                     )
                 else:
@@ -828,7 +1105,6 @@ class Migrator:
     def _migrate_build_system(self, doc: TOMLDocument) -> None:
         """Update [build-system.requires] poetry-core version."""
         from poetry.core.packages.dependency import Dependency
-        from tomlkit import string
 
         if "build-system" not in doc:
             return
@@ -864,5 +1140,5 @@ class Migrator:
                                 "Not updating [build-system.requires] poetry-core because the generated requirement did not round-trip safely."
                             )
                         else:
-                            requires[i] = string(rendered, literal=self.literal)
+                            requires[i] = make_string(rendered, literal=self.literal)
                     break
