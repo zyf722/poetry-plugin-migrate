@@ -605,8 +605,9 @@ dummy = "^1"
     tool = require_table(result["tool"], "tool")
     poetry = require_table(tool["poetry"], "tool.poetry")
     legacy = require_table(poetry["dependencies"], "tool.poetry.dependencies")
+    dynamic = require_array(project["dynamic"], "project.dynamic")
     assert "requires-python" not in project
-    assert "requires-python" in project["dynamic"]
+    assert "requires-python" in dynamic
     assert legacy["python"] == constraint
     assert project["dependencies"] == ["dummy>=1,<2"]
     assert any("standard Requires-Python" in warning for warning in migrator.warnings)

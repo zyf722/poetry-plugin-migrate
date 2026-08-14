@@ -10,6 +10,7 @@ from poetry_plugin_migrate.migrator import Migrator
 from poetry_plugin_migrate.toml import (
     reorder_standard_tables,
     require_array,
+    require_item,
     require_table,
 )
 
@@ -307,8 +308,9 @@ license = "{license_expression}" # license note
     project = require_table(result["project"], "project")
     tool = require_table(result["tool"], "tool")
     tool_poetry = require_table(tool["poetry"], "tool.poetry")
-    assert project["license"] == expected
-    assert "license note" in project["license"].trivia.comment
+    license_item = require_item(project["license"], "project.license")
+    assert str(license_item) == expected
+    assert "license note" in license_item.trivia.comment
     assert "license" not in tool_poetry
     assert not any("SPDX" in warning for warning in migrator.warnings)
 
