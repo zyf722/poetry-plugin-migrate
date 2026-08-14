@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from shutil import copy2
 from typing import TYPE_CHECKING
 
 from cleo.helpers import option
@@ -48,7 +47,10 @@ class MigrateCommand(Command):
         option(
             long_name="no-literal",
             short_name=None,
-            description="Use basic strings instead of literal strings in <comment>pyproject.toml</comment>.",
+            description=(
+                "Use TOML basic strings for generated requirements and "
+                "constraint values instead of preferring literal strings."
+            ),
         ),
     ]
 
@@ -80,16 +82,6 @@ class MigrateCommand(Command):
 
         pyproject_file_path = self.poetry.file.path
 
-        no_backup = self.option("no-backup")
-        if not no_backup and not dry_run:
-            # Create a backup of pyproject.toml
-            pyproject_backup_file_path = pyproject_file_path.parent / (
-                pyproject_file_path.stem + ".bak" + pyproject_file_path.suffix
-            )
-            self.line(f"Creating backup at <c1>{pyproject_backup_file_path}</>")
-            self.line("")
-            copy2(pyproject_file_path, pyproject_backup_file_path)
-
         self.line("Migrating <comment>pyproject.toml</comment>...")
         self.line("")
         migrator = Migrator(
@@ -98,12 +90,35 @@ class MigrateCommand(Command):
             literal=not no_literal,
         )
         pyproject_document = self.poetry.pyproject.data
-        migrated_document = migrator.run(pyproject_document)
+        try:
+            migrated_document = migrator.run(pyproject_document)
+        except (TypeError, ValueError) as error:
+            self.line_error(f"<error>Migration aborted: {error}</error>")
+            return 1
+
+        from poetry.core.factory import Factory as CoreFactory
+
+        validation = CoreFactory.validate(migrated_document.unwrap(), strict=True)
+        if validation["errors"]:
+            self.line_error(
+                "<error>Migration aborted because the generated configuration "
+                "is invalid:</error>"
+            )
+            for validation_error in validation["errors"]:
+                self.line_error(f"  - {validation_error}")
+            return 1
 
         if len(migrator.warnings) > 0:
             for warning in migrator.warnings:
                 self.line_error(f"<warning>Warning: {warning}</warning>")
             self.line("")
+
+        if (
+            not dry_run
+            and migrated_document.as_string() == pyproject_document.as_string()
+        ):
+            self.line("<info>No migration changes were necessary.</info>")
+            return 0
 
         self.line("<info>Generated file</info>")
         self.line("")
@@ -111,7 +126,25 @@ class MigrateCommand(Command):
         if dry_run:
             self.line(migrated_document.as_string())
         else:
+            from shutil import copy2
+
             from poetry.toml import TOMLFile
+
+            no_backup = self.option("no-backup")
+            if not no_backup:
+                backup = pyproject_file_path.with_name(
+                    f"{pyproject_file_path.stem}.bak{pyproject_file_path.suffix}"
+                )
+                index = 1
+                while backup.exists():
+                    backup = pyproject_file_path.with_name(
+                        f"{pyproject_file_path.stem}.bak.{index}"
+                        f"{pyproject_file_path.suffix}"
+                    )
+                    index += 1
+                self.line(f"Creating backup at <c1>{backup}</>")
+                self.line("")
+                copy2(pyproject_file_path, backup)
 
             self.line("<info>Writing <comment>pyproject.toml</comment></info>")
             self.line("")

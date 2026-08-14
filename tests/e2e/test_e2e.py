@@ -61,6 +61,30 @@ def test_dry_run_does_not_write_or_create_backup(
     assert "[project]" in application_tester.io.fetch_output()
 
 
+def test_noop_dry_run_still_prints_the_unchanged_document(tmp_path: Path) -> None:
+    project = tmp_path / "dummy-non-package"
+    project.mkdir()
+    pyproject = project / "pyproject.toml"
+    source = """\
+[tool.poetry]
+package-mode = false
+"""
+    pyproject.write_text(source)
+    app = Application()
+    app._poetry = Factory().create_poetry(project)
+    app.add(MigrateCommand())
+    tester = ApplicationTester(app)
+
+    status = tester.execute("migrate -n --no-check --dry-run")
+
+    assert status == 0
+    output = tester.io.fetch_output()
+    assert "[tool.poetry]" in output
+    assert "package-mode = false" in output
+    assert pyproject.read_text() == source
+    assert not pyproject.with_name("pyproject.bak.toml").exists()
+
+
 @pytest.mark.parametrize("project", ["simple-project"], indirect=True)
 def test_default_migration_creates_exact_backup(
     application_tester: ApplicationTester, pyproject_file: Path
@@ -72,6 +96,71 @@ def test_default_migration_creates_exact_backup(
     assert application_tester.status_code == 0
     assert pyproject_file.read_bytes() != original
     assert pyproject_file.with_name("pyproject.bak.toml").read_bytes() == original
+
+
+@pytest.mark.parametrize("project", ["simple-project"], indirect=True)
+def test_existing_backup_is_preserved(
+    application_tester: ApplicationTester, pyproject_file: Path
+) -> None:
+    original = pyproject_file.read_bytes()
+    first_backup = pyproject_file.with_name("pyproject.bak.toml")
+    first_backup.write_text("existing backup")
+
+    application_tester.execute("migrate -n --no-check")
+
+    assert application_tester.status_code == 0
+    assert first_backup.read_text() == "existing backup"
+    assert pyproject_file.with_name("pyproject.bak.1.toml").read_bytes() == original
+
+
+@pytest.mark.parametrize("project", ["simple-project"], indirect=True)
+def test_invalid_generated_file_is_not_written_or_backed_up(
+    application_tester: ApplicationTester,
+    pyproject_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = pyproject_file.read_bytes()
+
+    def invalid_result(self: object, document: object) -> object:
+        del self, document
+        return parse("[project]\nname = 'missing-version'\n")
+
+    monkeypatch.setattr("poetry_plugin_migrate.command.Migrator.run", invalid_result)
+    application_tester.execute("migrate -n --no-check")
+
+    assert application_tester.status_code == 1
+    assert pyproject_file.read_bytes() == original
+    assert not pyproject_file.with_name("pyproject.bak.toml").exists()
+
+
+def test_dependency_conflict_aborts_before_backup_or_write(tmp_path: Path) -> None:
+    project = tmp_path / "dummy-conflict"
+    project.mkdir()
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        """\
+[project]
+name = "dummy-conflict"
+version = "1.0.0"
+dependencies = ["dummy-standard>=1"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-legacy = "^2"
+"""
+    )
+    original = pyproject.read_bytes()
+    app = Application()
+    app._poetry = Factory().create_poetry(project)
+    app.add(MigrateCommand())
+    tester = ApplicationTester(app)
+
+    status = tester.execute("migrate -n --no-check")
+
+    assert status == 1
+    assert "Cannot safely migrate Poetry dependencies" in tester.io.fetch_error()
+    assert pyproject.read_bytes() == original
+    assert not pyproject.with_name("pyproject.bak.toml").exists()
 
 
 def test_interactive_cli_migrates_split_tables_with_nested_dependencies(
@@ -116,7 +205,7 @@ dummy-test = "^4.0"
 
     status = tester.execute(
         "migrate --no-backup",
-        inputs="no\nyes\n0\nno\n2\n",
+        inputs="no\nyes\n0\nno\n2\nno\n",
         interactive=True,
     )
 
