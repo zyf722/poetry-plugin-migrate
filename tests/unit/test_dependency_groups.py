@@ -174,6 +174,63 @@ dummy = "^1.0"
     assert groups["test"] == ["dummy (>=1.0,<2.0)"]
 
 
+def test_wheel_url_dependency_migrates_to_dependency_group() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.group.test.dependencies]
+dummy-wheel = { url = "https://example.invalid/dummy_wheel-1.2.3-py3-none-any.whl", markers = "python_version >= '3.10'" }
+"""
+    )
+
+    groups = require_table(result["dependency-groups"], "dependency-groups")
+    assert groups["test"] == [
+        'dummy-wheel @ https://example.invalid/dummy_wheel-1.2.3-py3-none-any.whl ; python_version >= "3.10"'
+    ]
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    assert "group" not in tool_poetry
+    assert not any(
+        "cannot be represented safely" in warning for warning in migrator.warnings
+    )
+
+
+def test_group_multi_constraint_comments_stay_with_generated_requirements() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.group.qa.dependencies]
+dummy = [
+    # first environment
+    { version = "^1", platform = "win32" }, #windows
+    { version = "^2", platform = "linux" }, ## linux
+]
+"""
+    )
+
+    rendered = result.as_string()
+    assert '# first environment\n    "dummy>=1,<2' in rendered
+    assert 'sys_platform == \\"win32\\"", #windows' in rendered
+    assert 'sys_platform == \\"linux\\"", ## linux' in rendered
+    assert not any("Restored" in warning for warning in migrator.warnings)
+
+
+def test_include_group_comments_stay_with_generated_include_objects() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.group.qa]
+include-groups = [
+    # fast checks
+    "lint", #lint note
+    "test", ## test note
+]
+"""
+    )
+
+    rendered = result.as_string()
+    assert '# fast checks\n    {include-group = "lint"}, #lint note' in rendered
+    assert '{include-group = "test"}, ## test note' in rendered
+    assert not any("Restored" in warning for warning in migrator.warnings)
+
+
 def test_relative_path_dependency_keeps_whole_group() -> None:
     result, migrator = migrate(
         """\

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from email.parser import Parser
+from itertools import product
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -32,6 +33,13 @@ class StubCommand:
         _multiple: bool = False,
     ) -> str:
         return choices[default]
+
+
+class KeepPoetryDependenciesCommand(StubCommand):
+    def confirm(self, question: str, default: bool = False) -> bool:
+        if "Keeps dependencies" in question:
+            return True
+        return default
 
 
 def migrate(source: str) -> tuple[TOMLDocument, Migrator]:
@@ -103,9 +111,12 @@ dummy-union = { version = ">=1,<2 || >=3,<4", optional = true }
     assert Factory().create_poetry(tmp_path).package.name == "dummy-union-project"
 
 
-def test_existing_project_dependency_array_becomes_multiline() -> None:
-    result, _ = migrate(
-        """\
+def test_existing_project_dependency_array_aborts_instead_of_changing_metadata() -> (
+    None
+):
+    with pytest.raises(ValueError, match="Cannot safely migrate Poetry dependencies"):
+        migrate(
+            """\
 [project]
 dependencies = ["click>=8"]
 
@@ -113,9 +124,116 @@ dependencies = ["click>=8"]
 python = "^3.10"
 requests = "^2.32"
 """
+        )
+
+
+def test_empty_standard_dependency_containers_are_migration_placeholders() -> None:
+    result, _ = migrate(
+        """\
+[project]
+dependencies = []
+
+[project.optional-dependencies]
+
+[tool.poetry.extras]
+feature = ["dummy-optional"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-runtime = "^1"
+dummy-optional = { version = "^2", optional = true }
+"""
     )
 
-    assert "dependencies = [\n" in result.as_string()
+    project = require_table(result["project"], "project")
+    optional = require_table(
+        project["optional-dependencies"], "project.optional-dependencies"
+    )
+    assert project["dependencies"] == ["dummy-runtime>=1,<2"]
+    assert optional["feature"] == ["dummy-optional>=2,<3"]
+
+
+def test_empty_legacy_extras_do_not_conflict_with_existing_standard_extras() -> None:
+    result, _ = migrate(
+        """\
+[project.optional-dependencies]
+existing = ["dummy-existing>=1"]
+
+[tool.poetry.extras]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-runtime = "^2"
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    optional = require_table(
+        project["optional-dependencies"], "project.optional-dependencies"
+    )
+    tool = require_table(result["tool"], "tool")
+    poetry = require_table(tool["poetry"], "tool.poetry")
+    assert optional["existing"] == ["dummy-existing>=1"]
+    assert project["dependencies"] == ["dummy-runtime>=2,<3"]
+    assert "extras" not in poetry
+
+
+def test_empty_standard_placeholders_are_removed_for_unsafe_poetry_model() -> None:
+    result, migrator = migrate(
+        """\
+[project]
+name = "dummy-placeholder"
+version = "1.0.0"
+dependencies = []
+
+[project.optional-dependencies]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-local = { path = "../dummy-local", optional = true }
+
+[tool.poetry.extras]
+feature = ["dummy-local"]
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    tool = require_table(result["tool"], "tool")
+    poetry = require_table(tool["poetry"], "tool.poetry")
+    assert "dependencies" not in project
+    assert "optional-dependencies" not in project
+    assert project["dynamic"] == ["dependencies"]
+    assert "dependencies" in poetry
+    assert "extras" in poetry
+    assert any("relative path" in warning for warning in migrator.warnings)
+
+
+def test_empty_standard_placeholders_are_removed_when_user_keeps_poetry_model() -> None:
+    migrator = Migrator(KeepPoetryDependenciesCommand(), skip=False, literal=False)
+    result = migrator.run(
+        parse(
+            """\
+[project]
+name = "dummy-placeholder"
+version = "1.0.0"
+dependencies = []
+
+[project.optional-dependencies]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-extra = { version = "^1", optional = true }
+
+[tool.poetry.extras]
+feature = ["dummy-extra"]
+"""
+        )
+    )
+
+    project = require_table(result["project"], "project")
+    assert "dependencies" not in project
+    assert "optional-dependencies" not in project
+    assert project["dynamic"] == ["dependencies"]
 
 
 def test_optional_dependency_arrays_are_multiline() -> None:
@@ -348,6 +466,255 @@ dummy-test = "^3.0" # group dependency note
     require_table(reparsed["dependency-groups"], "dependency-groups")
 
 
+def test_shared_optional_dependency_is_rendered_for_every_extra() -> None:
+    result, _ = migrate(
+        """\
+[tool.poetry.extras]
+first = ["dummy-shared"]
+second = ["dummy-shared"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy-shared = { version = "^2.3", optional = true, extras = ["speed"] } # shared note
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    optional = require_table(
+        project["optional-dependencies"], "project.optional-dependencies"
+    )
+    expected = ["dummy-shared[speed]>=2.3,<3.0"]
+    assert optional["first"] == expected
+    assert optional["second"] == expected
+    assert result.as_string().count("# shared note") == 1
+
+
+def test_extra_dependency_names_are_matched_using_pep503_normalization() -> None:
+    result, _ = migrate(
+        """\
+[tool.poetry.extras]
+feature = ["dummy_shared"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+Dummy-Shared = { version = "^2.3", optional = true }
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    optional = require_table(
+        project["optional-dependencies"], "project.optional-dependencies"
+    )
+    assert optional["feature"] == ["Dummy-Shared>=2.3,<3.0"]
+
+
+@pytest.mark.parametrize(
+    "source, message",
+    [
+        (
+            """\
+[tool.poetry.extras]
+feature_one = ["dummy"]
+feature-one = ["dummy"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = { version = "^1", optional = true }
+""",
+            "Duplicate Poetry extra names after normalization",
+        ),
+        (
+            """\
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy_name = "^1"
+dummy-name = "^2"
+""",
+            "Duplicate Poetry dependency names after normalization",
+        ),
+    ],
+)
+def test_normalized_name_collisions_abort(source: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        migrate(source)
+
+
+@pytest.mark.parametrize(
+    "dependency_lines, warning_fragment",
+    [
+        (
+            'dummy = { version = "^1", optional = true }',
+            "optional dependency is not referenced by any extra",
+        ),
+        (
+            'dummy = "^1"\n\n[tool.poetry.extras]\nfeature = ["dummy"]',
+            "dependency referenced by an extra is not optional",
+        ),
+    ],
+)
+def test_inconsistent_legacy_extra_models_are_preserved_as_a_whole(
+    dependency_lines: str, warning_fragment: str
+) -> None:
+    result, migrator = migrate(
+        f"""\
+[tool.poetry.dependencies]
+python = ">=3.10"
+{dependency_lines}
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    tool = require_table(result["tool"], "tool")
+    poetry = require_table(tool["poetry"], "tool.poetry")
+    legacy = require_table(poetry["dependencies"], "tool.poetry.dependencies")
+    assert project["dynamic"] == ["dependencies"]
+    assert "dummy" in legacy
+    assert any(warning_fragment in warning for warning in migrator.warnings)
+
+
+def test_existing_optional_dependencies_abort_legacy_extra_migration() -> None:
+    with pytest.raises(ValueError, match=r"Cannot safely merge.*optional-dependencies"):
+        migrate(
+            """\
+[project.optional-dependencies]
+feature = ["dummy>=1"]
+
+[tool.poetry.extras]
+feature = ["dummy"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = { version = "^1", optional = true }
+"""
+        )
+
+
+@pytest.mark.parametrize("constraint", [">=3.10 || <3.8", ">=3.10+local"])
+def test_non_standard_python_constraint_remains_poetry_dynamic(
+    constraint: str,
+) -> None:
+    result, migrator = migrate(
+        f"""\
+[tool.poetry.dependencies]
+python = "{constraint}"
+dummy = "^1"
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    tool = require_table(result["tool"], "tool")
+    poetry = require_table(tool["poetry"], "tool.poetry")
+    legacy = require_table(poetry["dependencies"], "tool.poetry.dependencies")
+    assert "requires-python" not in project
+    assert "requires-python" in project["dynamic"]
+    assert legacy["python"] == constraint
+    assert project["dependencies"] == ["dummy>=1,<2"]
+    assert any("standard Requires-Python" in warning for warning in migrator.warnings)
+
+
+def test_apostrophe_in_direct_url_is_preserved_when_pep508_rejects_it() -> None:
+    migrator = Migrator(StubCommand(), skip=True, literal=True)
+    result = migrator.run(
+        parse(
+            """\
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = { url = "https://example.invalid/owner's/dummy.whl" }
+"""
+        )
+    )
+
+    reparsed = parse(result.as_string())
+    project = require_table(reparsed["project"], "project")
+    tool = require_table(reparsed["tool"], "tool")
+    poetry = require_table(tool["poetry"], "tool.poetry")
+    legacy = require_table(poetry["dependencies"], "tool.poetry.dependencies")
+    assert project["dynamic"] == ["dependencies"]
+    assert legacy["dummy"] == {"url": "https://example.invalid/owner's/dummy.whl"}
+
+
+def test_multi_constraint_order_is_preserved() -> None:
+    result, _ = migrate(
+        """\
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = [
+    { version = "^1", platform = "win32" },
+    { version = "^2", platform = "linux" },
+    { version = "^3", python = ">=3.12" },
+]
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    dependencies = require_array(project["dependencies"], "project.dependencies")
+    assert [str(value).split(">=", 1)[1][0] for value in dependencies] == [
+        "1",
+        "2",
+        "3",
+    ]
+
+
+def test_multi_constraint_comments_stay_with_their_generated_requirements() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = [
+    # Windows branch
+    { version = "^1", platform = "win32" }, #win
+    { version = "^2", platform = "linux" }, ## Linux heading
+]
+"""
+    )
+
+    rendered = result.as_string()
+    assert '# Windows branch\n    "dummy>=1,<2' in rendered
+    assert '\\"win32\\"", #win' in rendered
+    assert '\\"linux\\"", ## Linux heading' in rendered
+    assert not any("Restored" in warning for warning in migrator.warnings)
+
+
+def test_optional_multi_constraint_comments_stay_with_their_extra() -> None:
+    result, migrator = migrate(
+        """\
+[tool.poetry.dependencies]
+python = ">=3.10"
+dummy = [
+    # old runtime branch
+    { version = "^1", python = "<3.12", optional = true }, #old
+    { version = "^2", python = ">=3.12", optional = true }, ## new runtime
+]
+
+[tool.poetry.extras]
+feature = ["dummy"]
+"""
+    )
+
+    rendered = result.as_string()
+    assert '# old runtime branch\n    "dummy>=1,<2' in rendered
+    assert 'python_version < \\"3.12\\"", #old' in rendered
+    assert 'python_version >= \\"3.12\\"", ## new runtime' in rendered
+    assert not any("Restored" in warning for warning in migrator.warnings)
+
+
+def test_python_only_legacy_table_leaves_an_explicit_empty_dependency_array() -> None:
+    result, _ = migrate(
+        """\
+[tool.poetry]
+name = "dummy-empty"
+version = "1.0.0"
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+"""
+    )
+
+    project = require_table(result["project"], "project")
+    assert project["dependencies"] == []
+    assert Factory.validate(result.unwrap(), strict=True)["errors"] == []
+
+
 def _requires_dist(wheel: Path) -> set[str]:
     with ZipFile(wheel) as archive:
         metadata_name = next(
@@ -357,19 +724,35 @@ def _requires_dist(wheel: Path) -> set[str]:
     return set(metadata.get_all("Requires-Dist", []))
 
 
-def _requirement_semantics(requirements: set[str]) -> set[tuple[object, ...]]:
-    result: set[tuple[object, ...]] = set()
-    for raw_requirement in requirements:
-        requirement = Requirement(raw_requirement)
-        result.add(
-            (
-                canonicalize_name(requirement.name),
-                tuple(sorted(requirement.extras)),
-                str(requirement.specifier),
-                requirement.url,
-                str(requirement.marker) if requirement.marker else None,
+def _requirement_semantics(
+    requirements: set[str],
+) -> dict[tuple[str, str, str], set[tuple[object, ...]]]:
+    parsed = [Requirement(raw_requirement) for raw_requirement in requirements]
+    result: dict[tuple[str, str, str], set[tuple[object, ...]]] = {}
+    systems = (("win32", "Windows"), ("linux", "Linux"), ("darwin", "Darwin"))
+    for extra, (sys_platform, platform_system), python_version in product(
+        ("", "first", "second", "unrelated"), systems, ("3.10", "3.12")
+    ):
+        environment = {
+            "extra": extra,
+            "sys_platform": sys_platform,
+            "platform_system": platform_system,
+            "python_version": python_version,
+            "python_full_version": f"{python_version}.0",
+        }
+        active: set[tuple[object, ...]] = set()
+        for requirement in parsed:
+            if requirement.marker and not requirement.marker.evaluate(environment):
+                continue
+            active.add(
+                (
+                    canonicalize_name(requirement.name),
+                    tuple(sorted(requirement.extras)),
+                    str(requirement.specifier),
+                    requirement.url,
+                )
             )
-        )
+        result[(extra, sys_platform, python_version)] = active
     return result
 
 
@@ -386,12 +769,17 @@ description = "Synthetic wheel metadata comparison"
 authors = []
 packages = [{ include = "dummy_metadata_app" }]
 
+[tool.poetry.extras]
+first = ["dummy-shared"]
+second = ["dummy-shared"]
+
 [tool.poetry.dependencies]
 python = ">=3.10"
 dummy-runtime = "^2.0"
 dummy-feature = { version = "~3.1", extras = ["speed"] }
 dummy-marker = { version = ">=4,<5", markers = "sys_platform == 'win32'" }
 dummy-url = { url = "https://example.invalid/dummy_url-5.0-py3-none-any.whl" }
+dummy-shared = { version = "^6.0", optional = true }
 """
     pyproject = project / "pyproject.toml"
     pyproject.write_text(source)
@@ -399,7 +787,7 @@ dummy-url = { url = "https://example.invalid/dummy_url-5.0-py3-none-any.whl" }
     before_poetry = Factory().create_poetry(project)
     before_wheel = WheelBuilder(before_poetry).build(tmp_path / "before-dist")
 
-    result, _ = migrate(source)
+    result, migrator = migrate(source)
     pyproject.write_text(result.as_string())
     after_poetry = Factory().create_poetry(project)
     after_wheel = WheelBuilder(after_poetry).build(tmp_path / "after-dist")
@@ -407,3 +795,25 @@ dummy-url = { url = "https://example.invalid/dummy_url-5.0-py3-none-any.whl" }
     assert _requirement_semantics(
         _requires_dist(after_wheel)
     ) == _requirement_semantics(_requires_dist(before_wheel))
+    project_table = require_table(result["project"], "project")
+    project_dependencies = require_array(
+        project_table["dependencies"], "project.dependencies"
+    )
+    assert (
+        "dummy-url @ https://example.invalid/dummy_url-5.0-py3-none-any.whl"
+        in project_dependencies
+    )
+    optional = require_table(
+        project_table["optional-dependencies"], "project.optional-dependencies"
+    )
+    assert optional["first"] == ["dummy-shared>=6.0,<7.0"]
+    assert optional["second"] == ["dummy-shared>=6.0,<7.0"]
+    tool = require_table(result["tool"], "tool")
+    tool_poetry = require_table(tool["poetry"], "tool.poetry")
+    legacy_dependencies = require_table(
+        tool_poetry["dependencies"], "tool.poetry.dependencies"
+    )
+    assert "dummy-url" not in legacy_dependencies
+    assert not any(
+        "PEP 508 round-trip failed" in warning for warning in migrator.warnings
+    )
