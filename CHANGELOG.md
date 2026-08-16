@@ -1,6 +1,80 @@
 # CHANGELOG
 
 
+## v0.2.1 (2026-08-16)
+
+### Bug Fixes
+
+- **cli**: Validate output before writing
+  ([`1568665`](https://github.com/zyf722/poetry-plugin-migrate/commit/15686655738dc71eafe0f7081e0cd2c2ec7d54cd))
+
+- **dependencies**: Preserve authoritative models
+  ([`928d90c`](https://github.com/zyf722/poetry-plugin-migrate/commit/928d90c539813c5c0657b38df5118fab9f37c77b))
+
+- **dependencies**: Preserve Poetry-only semantics
+  ([`1de37ce`](https://github.com/zyf722/poetry-plugin-migrate/commit/1de37ce2a3ad0ef7e041bbe44fcbceb9c430cc3a))
+
+- **migration**: Preserve dependency semantics
+  ([#1](https://github.com/zyf722/poetry-plugin-migrate/pull/1),
+  [`9be6f13`](https://github.com/zyf722/poetry-plugin-migrate/commit/9be6f135e044670be2ac76177e435e7f26a95a6e))
+
+- **migration**: Preserve metadata and layout
+  ([`223a793`](https://github.com/zyf722/poetry-plugin-migrate/commit/223a7937529e0685102e7fe3bb5a4ba2fdee8166))
+
+- **release**: Resume interrupted publication
+  ([`015f469`](https://github.com/zyf722/poetry-plugin-migrate/commit/015f469ff8ef0f9cfc6d7e9198d97a9d98dc6d09))
+
+- **requirements**: Accept inferred wheel versions
+  ([`333f46d`](https://github.com/zyf722/poetry-plugin-migrate/commit/333f46dc16b2d583d76df5f8d72a54fd90ff0cbe))
+
+- **requirements**: Validate structured PEP 508 output (#3, #6)
+  ([`9eacbdd`](https://github.com/zyf722/poetry-plugin-migrate/commit/9eacbdd55a95d20a35a5c2b1244ddc88f00659bd))
+
+- **typing**: Narrow tomlkit test values
+  ([`3367b85`](https://github.com/zyf722/poetry-plugin-migrate/commit/3367b8528cf6fa110f514f693cd6ad3155c1fcb0))
+
+### Build System
+
+- **deps**: Remove pytest-mock
+  ([`1a8cf29`](https://github.com/zyf722/poetry-plugin-migrate/commit/1a8cf290d7dda5996e7ce244336b03decb023beb))
+
+### Documentation
+
+- **dependencies**: Clarify fallback behavior
+  ([`180ee8d`](https://github.com/zyf722/poetry-plugin-migrate/commit/180ee8d8d1a386e842fbf727c36da3051b573ac4))
+
+- **dependencies**: Explain PEP 508 round trips (#3, #6)
+  ([`36fc164`](https://github.com/zyf722/poetry-plugin-migrate/commit/36fc16411ad81eaaac15a4ba81b1d0d76a8ba395))
+
+- **migration**: Document safe validation
+  ([`7a59019`](https://github.com/zyf722/poetry-plugin-migrate/commit/7a590194e7b935f2e109104c97bc73224570ad3c))
+
+- **readme**: Document migration safeguards
+  ([`fd3b439`](https://github.com/zyf722/poetry-plugin-migrate/commit/fd3b439a27b2814fa12291883d0c9c75e87890f7))
+
+- **readme**: Improve migration guidance structure
+  ([`6e23f3b`](https://github.com/zyf722/poetry-plugin-migrate/commit/6e23f3b8d1c18abaf66d02b0de80dc04b5077b71))
+
+- **readme**: Update installation requirements and clarify no-backup option description
+  ([`c3c6696`](https://github.com/zyf722/poetry-plugin-migrate/commit/c3c66967a9641669fd386422684ecc8d2daf6ad0))
+
+- **readme**: Update readme
+  ([`d4fac04`](https://github.com/zyf722/poetry-plugin-migrate/commit/d4fac04a7b787265f9b4aee22f37dd8e6b2438d4))
+
+### Refactoring
+
+- **toml**: Preserve parsed structure
+  ([`1c60b8d`](https://github.com/zyf722/poetry-plugin-migrate/commit/1c60b8dbf336381b9cbd4aa7787b10ecbb857171))
+
+- **typing**: Enforce strict checks
+  ([`71f6f60`](https://github.com/zyf722/poetry-plugin-migrate/commit/71f6f604b8ac6bb0ab352911ca2d19c7b93dc279))
+
+### Testing
+
+- **requirements**: Cover safe rendering and fallback (#3, #6)
+  ([`e2ef375`](https://github.com/zyf722/poetry-plugin-migrate/commit/e2ef37531eb0e01d726049b541bffd3f1194ea43))
+
+
 ## v0.2.0 (2026-08-12)
 
 ### Bug Fixes
