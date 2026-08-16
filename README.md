@@ -54,15 +54,15 @@ git diff -- pyproject.toml poetry.lock
 
 ### Backup
 
-By default, the command runs `poetry check`, then applies the [migration rules](#migration-rules) using your interactive choices. The generated document is validated against Poetry's schemas before any file is written.
+By default, the command runs `poetry check`, then applies the [migration rules](#migration-rules) using your interactive choices. Poetry checks the result before the plugin writes any file.
 
 Backups are created only after migration and validation succeed. Existing backups are never overwritten: after `pyproject.bak.toml`, the command uses `pyproject.bak.1.toml`, `pyproject.bak.2.toml`, and so on.
 
 If migration makes no changes, a normal run creates no backup and does not rewrite the file. `--dry-run` still prints the unchanged result.
 
-### Optional canonical layout
+### Optional table order
 
-The final interactive prompt optionally applies a canonical top-level layout. It is disabled by default, including in `--no-interaction` mode.
+The final interactive prompt asks whether to reorder the top-level tables. This is disabled by default, including in `--no-interaction` mode.
 
 As the Python packaging specifications for [project metadata](https://packaging.python.org/en/latest/specifications/pyproject-toml/) and [dependency groups](https://packaging.python.org/en/latest/specifications/dependency-groups/) do not recommend an order, the following is only this plugin's formatting convention:
 
@@ -72,17 +72,17 @@ As the Python packaging specifications for [project metadata](https://packaging.
 4. other top-level tables, retaining their relative order
 5. `[build-system]`
 
-Only complete table blocks are reordered. Within `[tool]`, Poetry blocks move before other tools while both groups retain their internal relative order.
+Only whole table sections are moved. Within `[tool]`, Poetry sections move before other tools, while the existing order inside both groups is kept.
 
 The layout option does not reorder fields, group names, requirement arrays, nested tables, or tool-specific configuration.
 
 ### Comments and generated strings
 
-tomlkit preserves comments and blank lines but cannot infer their intended meaning. Canonical layout therefore moves each complete parsed table block with its associated comments and whitespace; an inter-section comment can move with its preceding table.
+[`tomlkit`](https://github.com/python-poetry/tomlkit) keeps comments and blank lines, but it cannot know which section a comment was intended to describe. Reordering therefore moves each whole table section together with the comments and blank lines attached to it. A comment between two sections may move with the section above it.
 
 During migration, unambiguously associated dependency comments stay with their generated requirements. Comments without a clear destination are restored at the end of the document with a warning instead of being silently lost. Shared optional dependencies do not duplicate their source comment.
 
-Physically split `[tool.poetry]` declarations are consolidated only when migration may edit them. Generated requirements and constraints prefer literal strings, with an automatic fallback for values that literal syntax cannot encode. Moved values retain their original syntax, and `--no-literal` does not reserialize the whole document.
+If `[tool.poetry]` is split across several places in the file, the plugin brings those parts together only when it needs to edit them. Newly generated values use TOML [single-quoted strings](https://toml.io/en/v1.0.0#literal-string) when possible and [double-quoted strings](https://toml.io/en/v1.0.0#basic-string) when needed. Existing values keep their original quoting, and `--no-literal` does not rewrite the whole document.
 
 > **Note**: Internally, this plugin uses [`tomlkit`](https://github.com/python-poetry/tomlkit), a *style-preserving* TOML library, to parse and modify the `pyproject.toml` file. Hence, the migrated result might NOT be pretty-formatted and might need reformatting.
 
@@ -105,7 +105,7 @@ Following fields will be directly migrated:
 | :---: | :---: | :---: |
 | `[tool.poetry.name]` | `[project.name]` | - |
 | `[tool.poetry.description]` | `[project.description]` | - |
-| `[tool.poetry.license]` | `[project.license]` | Moved only if it is already a valid SPDX expression; legacy license text is kept dynamic for manual migration |
+| `[tool.poetry.license]` | `[project.license]` | Moved only if it is already a valid [SPDX license expression](https://packaging.python.org/en/latest/specifications/pyproject-toml/#license); older free-form license text is left for manual migration |
 | `[tool.poetry.keywords]` | `[project.keywords]` | - |
 | `[tool.poetry.urls]` | `[project.urls]` | Moved only when `[project.urls]` does not already exist |
 | `[tool.poetry.homepage]` | `[project.urls.homepage]` | - |
@@ -117,7 +117,7 @@ Following fields will be directly migrated:
 | `[tool.poetry.maintainers]` | `[project.maintainers]` | Format changed from `"name <email>"` to `{"name": name, "email": email}` |
 | `[tool.poetry.extras]` | `[project.optional-dependencies]` | See [Dependencies Migration](#dependencies-migration) for details |
 
-Existing standardized metadata is authoritative. Equal scalar duplicates can be removed, but conflicts and legacy container values are retained with a warning instead of being merged into the effective metadata. Migration removes only static/dynamic conflicts that it introduces; validation reports pre-existing conflicts.
+If a field already exists in `[project]`, the plugin treats it as the value you chose. A matching simple value can be removed from `[tool.poetry]`. If the values disagree, or the older value is a list or table, the plugin leaves it in place and shows a warning instead of trying to combine the two. It changes [`project.dynamic`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic) only when needed for a field being migrated; Poetry reports conflicts that were already present.
 
 ### Conditional-Migrated Fields
 
@@ -138,7 +138,7 @@ Otherwise, this field will be moved to `[project]`.
 
 #### `[tool.poetry.license]`
 
-A license moves to `[project.license]` only when it is already a valid SPDX expression, with casing normalized by `packaging`. Ambiguous legacy text such as `MIT License` remains in `[tool.poetry.license]`; `"license"` is marked dynamic and a warning requests manual review instead of guessing an SPDX identifier.
+A license moves to `[project.license]` only when it is already a valid [SPDX license expression](https://packaging.python.org/en/latest/specifications/pyproject-toml/#license), such as `MIT`. Free-form text such as `MIT License` remains in `[tool.poetry.license]`; `"license"` is added to [`project.dynamic`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic), and a warning asks you to review it manually rather than guessing the intended license.
 
 #### `[tool.poetry.readme]`
 
@@ -171,9 +171,9 @@ You can **choose** one of the following strategies for this field:
 
 See [Poetry documentation](https://python-poetry.org/docs/main/pyproject/#requires-python) for further information about this field.
 
-Poetry accepts constraints that standardized `requires-python` cannot express, including unions using `||` and some local-version comparisons.
+Poetry accepts some Python version rules that [`project.requires-python`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#requires-python) cannot express, including alternatives joined with `||` and some comparisons involving local version labels.
 
-Such a value remains under `[tool.poetry.dependencies.python]`; `requires-python` is marked dynamic and a warning is emitted instead of writing invalid project metadata.
+In these cases, the value remains under `[tool.poetry.dependencies.python]`; `requires-python` is added to [`project.dynamic`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic), and the plugin shows a warning instead of writing an invalid value.
 
 #### `[tool.poetry.dependencies]`
 
@@ -206,25 +206,25 @@ You can also **choose** one of the following constraints of `poetry-core` for bu
 
 Entries in `[tool.poetry.dependencies]` and `[tool.poetry.extras]` will be migrated to [PEP-508](https://peps.python.org/pep-0508/) strings in `[project.dependencies]` and `[project.optional-dependencies]` respectively.
 
-#### Safety and fallback
+#### When dependencies cannot be moved safely
 
-Non-empty standardized dependency containers are authoritative, while explicitly empty containers are treated as migration placeholders. Conflicting models and duplicate normalized dependency or extra names abort migration instead of being guessed or merged.
+If `[project.dependencies]` or `[project.optional-dependencies]` already contains entries, the plugin keeps those entries and does not try to combine them with the Poetry sections. An empty list or table may be filled during migration. Migration also stops if two dependency or extra names refer to the same [normalized package name](https://packaging.python.org/en/latest/specifications/name-normalization/)—for example, `some-package` and `some_package`—rather than choosing one silently.
 
-Every generated requirement is parsed by both `packaging` and Poetry. Some Poetry semantics cannot be represented completely in PEP-508 metadata, including:
+The plugin asks both [`packaging`](https://packaging.pypa.io/en/stable/requirements.html) and Poetry to read every generated requirement and checks that its meaning has not changed. Some Poetry dependency forms cannot be written completely as [PEP 508 requirements](https://peps.python.org/pep-0508/), including:
 
 - relative paths;
-- Poetry-only fields such as `source`, `allow-prereleases`, and `develop`;
+- [Poetry-only settings](https://python-poetry.org/docs/main/dependency-specification/) such as `source`, `allow-prereleases`, and `develop`;
 - version unions such as `>=1,<2 || >=3,<4`.
 
-Wheel URLs have one narrow exception: Poetry may infer a version from the `.whl` filename even though the PEP-508 URL already identifies the exact artifact.
+A URL that points directly to a [wheel file](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) is handled as one limited exception: Poetry may read a version from the `.whl` filename even though the URL already selects that exact file.
 
 The exception applies only to unconstrained URL dependencies ending in `.whl`. The URL, extras, markers, and all other direct-reference fields must still match.
 
-If any non-Python main dependency fails validation, the plugin keeps the complete `[tool.poetry.dependencies]` and `[tool.poetry.extras]` model and marks `project.dependencies` as dynamic.
+If any main dependency other than the Python version cannot be moved safely, the plugin keeps all of `[tool.poetry.dependencies]` and `[tool.poetry.extras]`, then adds `"dependencies"` to [`project.dynamic`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic).
 
-This fallback is all-or-nothing because `[project.dependencies]` is authoritative for wheel metadata. Partially migrating safe entries could make a retained private-source or relative-path dependency disappear from the built package.
+This is all-or-nothing because `[project.dependencies]` determines which dependencies are recorded in the built package. Moving only the easy entries could leave a private-source or relative-path dependency out of the package by mistake.
 
-The Python constraint choice is applied separately. Safe dependencies, including [multiple constraints](https://python-poetry.org/docs/main/dependency-specification/#multiple-constraints-poetry), are rendered from their structured Poetry objects in source order. Dependency groups apply the same all-or-nothing rule independently for each group.
+Your choice for the Python version is handled separately. Dependencies that can be moved safely, including [multiple constraints](https://python-poetry.org/docs/main/dependency-specification/#multiple-constraints-poetry), keep their original order. Each dependency group is checked separately using the same all-or-nothing rule.
 
 #### Requirement formatting
 
@@ -235,13 +235,13 @@ You can **choose** whether to remove brackets around version specifiers in the g
 
 Per [PEP-508](https://peps.python.org/pep-0508/), brackets around version specifiers should not be generated, only accepted for compatibility with PEP-345.
 
-Removing brackets is performed from parsed requirement fields rather than by editing the generated string. Constraint order, marker contents, and direct-reference formatting are otherwise preserved.
+To remove brackets, the plugin rebuilds the requirement from its individual parts instead of using a text replacement. The order of version rules, environment markers, and direct URLs is otherwise kept.
 
 ### Dependency Groups Migration
 
 Poetry 2.2 added support for standard [PEP-735 dependency groups](https://packaging.python.org/en/latest/specifications/dependency-groups/). Poetry 2.2.1 fixed optional group declarations, so this plugin requires at least 2.2.1.
 
-The plugin migrates representable dependencies from `[tool.poetry.group.<name>.dependencies]` and legacy `[tool.poetry.dev-dependencies]` into `[dependency-groups]`. If any dependency fails the PEP-508 round-trip check, the complete Poetry group is kept.
+The plugin moves dependencies that can be expressed as PEP 508 requirements from `[tool.poetry.group.<name>.dependencies]` and the older `[tool.poetry.dev-dependencies]` table into `[dependency-groups]`. If moving any dependency would change its meaning, the complete Poetry group is kept.
 
 Poetry-specific group metadata remains in place. For example, an optional group is represented as:
 
@@ -330,7 +330,7 @@ git-rev = { git = "https://github.com/example/rev.git", rev = "deadbeef" }
 git-tag = { git = "https://github.com/example/tag.git", tag = "1.2.3" }
 git-subdir = { git = "https://github.com/example/subdir.git", subdirectory = "subdir" }
 local-package = { path = "../local_package/", develop = true }
-local-package-absolute = { path = "/path/to/absolute/package/", develop = true }
+local-absolute-package = { path = "<% LOCAL_ABSOLUTE_PACKAGE %>", develop = true }
 url = { url = "https://example.com/url-package-0.1.0.tar.gz" }
 baby = { version = "^0.12.0", extras = ["toy-1", "toy-2"] }
 spy = { version = "*", source = "private" }
@@ -361,11 +361,123 @@ build-backend = "poetry.core.masonry.api"
 
 ```
 
-#### Expected behavior
+#### After (default non-interactive choices)
 
-This fixture sets `package-mode = false` but still contains complete legacy name and version metadata, so it can produce a valid `[project]` table. Its complete output is asserted in the [expected fixture](./tests/fixtures/poetry18/non-interactive.expected.tpl.toml) instead of being duplicated here.
+Running `poetry migrate --no-interaction` produces:
 
-A non-package project without enough metadata for `[project]` skips only PEP 621 migration. Dependency groups, Poetry requirements, build-system updates, and optional layout remain available.
+```toml
+# This file is part of the poetry-plugin-migrate project.
+
+# Some comments on this line
+[tool.poetry]
+package-mode = false # Hey this should not be touched
+readme = ["README1.md", "README2.md"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development",
+    "Topic :: System",
+    "Topic :: Terminals",
+    "Typing :: Typed",
+    "Operating System :: OS Independent",
+]
+packages = [{ include = "poetry18" }] # This should not be touched too
+
+[tool.poetry.scripts]
+poet = { reference = "write_some_poem.exe", type = "file" } # File-based scripts!
+
+[tool.poetry.extras]
+birthday-present = ["chocolate"]
+networking = ["requests", "httpx"]
+
+[[tool.poetry.source]]
+name = "private"
+url = "http://a.source.too.secret/simple"
+priority = "supplemental"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+careter = "^1.2.3"
+tilder = "~1.2.3"
+wildcarder = "1.*"
+inequalitier = ">=1.2.3,<2.0.0"
+exacter = "1.2.3"
+equal-exacter = "==1.2.3"
+git-branch = { git = "https://github.com/example/branch.git", branch = "next" }
+git-rev = { git = "https://github.com/example/rev.git", rev = "deadbeef" }
+git-tag = { git = "https://github.com/example/tag.git", tag = "1.2.3" }
+git-subdir = { git = "https://github.com/example/subdir.git", subdirectory = "subdir" }
+local-package = { path = "../local_package/", develop = true }
+local-absolute-package = { path = "<% LOCAL_ABSOLUTE_PACKAGE %>", develop = true }
+url = { url = "https://example.com/url-package-0.1.0.tar.gz" }
+baby = { version = "^0.12.0", extras = ["toy-1", "toy-2"] }
+spy = { version = "*", source = "private" }
+tomli = { version = "^2.0.1", python = "<3.11" }
+pathlib2 = { version = "^2.2", markers = "python_version <= '3.4' or sys_platform == 'win32'" }
+foo = [
+    { platform = "win32", version = "^2.0", python = ">=3.8", source = "private" },
+    { platform = "darwin", url = "https://example.com/example-1.0-py3-none-any.whl" },
+    { platform = "linux", version = "^1.0", python = ">=3.6,<3.8" },
+]
+chocolate = [
+    { platform = "win32", version = "^1.0", optional = true, source = "private" },
+    { platform = "darwin", version = "~2.0", optional = true },
+    { platform = "linux", version = "==3.0", optional = true },
+]
+requests = { version = "^2.0", optional = true, python = "^3.6" }
+httpx = { version = "^0.23", optional = true, python = "^3.6" }
+
+[tool.poetry.dependencies.big-guy]
+version = ">=18.0.0"
+allow-prereleases = true
+python = "^3.9"
+markers = "platform_python_implementation == 'CPython'"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "poetry-18"
+description = "Test project that contains a pyproject.toml with Poetry v1.8 metadata."
+license = "MIT"
+keywords = ["we", "just", "need", "some", "keywords", "for", "this", "project"]
+version = "1.2.3"
+dynamic = [
+    "classifiers",
+    "readme",
+    "dependencies",
+]
+authors = [
+    {name = "MaxMixAlex", email = "MaxMixAlex@protonmail.com"},
+    {name = "Test Guy", email = "test.guy@example.com"},
+]
+maintainers = [
+    {name = "Maintainer One", email = "maintainer.one@example.com"},
+    {name = "Maintainer Two", email = "maintainer.two@other.example.com"},
+]
+requires-python = '>=3.9,<4.0'
+
+[project.urls]
+homepage = "https://example.com/"
+repository = "https://github.com/zyf722/poetry-plugin-migrate"
+documentation = "https://anyway.we.need.a.documentation.website/"
+"Test custom URL" = "https://how.are.you/doing/"
+"Just another one" = "https://another.one/"
+
+[project.entry-points."poetry.application.plugin"]
+hi = "poetry18.plugins:ActuallyThereIsNoSuchPlugin"
+
+
+[project.scripts]
+run_as_fast_as_possible = "poetry18.__main__:main"
+```
+
+Some dependencies in this example use Poetry-only settings, so the plugin keeps the complete Poetry dependency sections and lists `dependencies` in [`project.dynamic`](https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic). See [When dependencies cannot be moved safely](#when-dependencies-cannot-be-moved-safely) for details.
+
+A non-package project without enough information for `[project]` skips only the [PEP 621](https://peps.python.org/pep-0621/) migration. Dependency groups, Poetry requirements, build-system updates, and optional table ordering remain available.
 
 ## Contributing
 
