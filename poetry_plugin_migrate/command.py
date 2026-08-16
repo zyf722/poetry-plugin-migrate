@@ -34,7 +34,10 @@ class MigrateCommand(Command):
         option(
             long_name="no-backup",
             short_name=None,
-            description="Do not create a backup of <comment>pyproject.toml</comment> before migration.",
+            description=(
+                "Do not create a backup of <comment>pyproject.toml</comment> "
+                "before writing the migrated file."
+            ),
         ),
         option(
             long_name="dry-run",

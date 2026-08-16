@@ -14,6 +14,8 @@ Check the blog post by Poetry team for more details: [Announcing Poetry 2.0.0 # 
 
 ## Installation
 
+The plugin runs on Python 3.10+ and Poetry 2.2.1+.
+
 The easiest way to add the `migrate` plugin is via the `self add` command of Poetry.
 
 ```bash
@@ -82,7 +84,7 @@ The layout option does not reorder fields, group names, requirement arrays, nest
 
 During migration, unambiguously associated dependency comments stay with their generated requirements. Comments without a clear destination are restored at the end of the document with a warning instead of being silently lost. Shared optional dependencies do not duplicate their source comment.
 
-If `[tool.poetry]` is split across several places in the file, the plugin brings those parts together only when it needs to edit them. Newly generated values use TOML [single-quoted strings](https://toml.io/en/v1.0.0#literal-string) when possible and [double-quoted strings](https://toml.io/en/v1.0.0#basic-string) when needed. Existing values keep their original quoting, and `--no-literal` does not rewrite the whole document.
+If `[tool.poetry]` is split across several places in the file, the plugin brings those parts together only when it needs to edit them. Newly generated requirements and version constraints use TOML [single-quoted strings](https://toml.io/en/v1.0.0#literal-string) when possible and [double-quoted strings](https://toml.io/en/v1.0.0#basic-string) when needed. Existing values keep their original quoting, and `--no-literal` does not rewrite the whole document.
 
 > **Note**: Internally, this plugin uses [`tomlkit`](https://github.com/python-poetry/tomlkit), a *style-preserving* TOML library, to parse and modify the `pyproject.toml` file. Hence, the migrated result might NOT be pretty-formatted and might need reformatting.
 
@@ -91,7 +93,7 @@ If `[tool.poetry]` is split across several places in the file, the plugin brings
 - `-n` / `--no-interaction`: Skip interactive prompts and use default migration strategies. This is a global Poetry option.
 - `--no-check`: Skip `poetry check` for `pyproject.toml`.
 - `--check-strict`: Fail if check reports warnings.
-- `--no-backup`: Do not create a backup of `pyproject.toml` before migration.
+- `--no-backup`: Do not create a backup of `pyproject.toml` before writing the migrated file.
 - `--dry-run`: Run the migration without modifying the `pyproject.toml`. Migration result will be printed to the console.
 - `--no-literal`: Use TOML basic strings for generated requirements and constraint values instead of preferring literal strings.
 
@@ -108,9 +110,9 @@ Following fields will be directly migrated:
 | `[tool.poetry.license]` | `[project.license]` | Moved only if it is already a valid [SPDX license expression](https://packaging.python.org/en/latest/specifications/pyproject-toml/#license); older free-form license text is left for manual migration |
 | `[tool.poetry.keywords]` | `[project.keywords]` | - |
 | `[tool.poetry.urls]` | `[project.urls]` | Moved only when `[project.urls]` does not already exist |
-| `[tool.poetry.homepage]` | `[project.urls.homepage]` | - |
-| `[tool.poetry.repository]` | `[project.urls.repository]` | - |
-| `[tool.poetry.documentation]` | `[project.urls.documentation]` | - |
+| `[tool.poetry.homepage]` | `[project.urls.homepage]` | Moved only when `[project.urls]` does not already exist |
+| `[tool.poetry.repository]` | `[project.urls.repository]` | Moved only when `[project.urls]` does not already exist |
+| `[tool.poetry.documentation]` | `[project.urls.documentation]` | Moved only when `[project.urls]` does not already exist |
 | `[tool.poetry.plugins]` | `[project.entry-points]` | Moved only when `[project.entry-points]` does not already exist |
 | `[tool.poetry.scripts]` | `[project.scripts]` | Moved only when `[project.scripts]` does not already exist, and only for entries that are **NOT** of type `file` <br> See python-poetry/poetry#9510 for details |
 | `[tool.poetry.authors]` | `[project.authors]` | Format changed from `"name <email>"` to `{"name": name, "email": email}` |
@@ -194,7 +196,7 @@ You can explicitly specify the required Poetry version in `[tool.poetry.requires
 
 #### `[build-system.requires]`
 
-You can also **choose** one of the following constraints of `poetry-core` for building:
+If `[build-system.requires]` contains `poetry-core` without a version constraint, you can **choose** one of the following constraints:
 
 - `>=2.0`
 - `>=2.0,<3.0`
@@ -208,7 +210,7 @@ Entries in `[tool.poetry.dependencies]` and `[tool.poetry.extras]` will be migra
 
 #### When dependencies cannot be moved safely
 
-If `[project.dependencies]` or `[project.optional-dependencies]` already contains entries, the plugin keeps those entries and does not try to combine them with the Poetry sections. An empty list or table may be filled during migration. Migration also stops if two dependency or extra names refer to the same [normalized package name](https://packaging.python.org/en/latest/specifications/name-normalization/)—for example, `some-package` and `some_package`—rather than choosing one silently.
+If `[project.dependencies]` already contains entries while Poetry still lists dependencies, or `[project.optional-dependencies]` and `[tool.poetry.extras]` are both in use, migration stops without writing a file. The plugin does not guess how to combine them. An empty list or table may be filled during migration. Migration also stops if two dependency or extra names refer to the same [normalized package name](https://packaging.python.org/en/latest/specifications/name-normalization/)—for example, `some-package` and `some_package`—rather than choosing one silently.
 
 The plugin asks both [`packaging`](https://packaging.pypa.io/en/stable/requirements.html) and Poetry to read every generated requirement and checks that its meaning has not changed. Some Poetry dependency forms cannot be written completely as [PEP 508 requirements](https://peps.python.org/pep-0508/), including:
 
